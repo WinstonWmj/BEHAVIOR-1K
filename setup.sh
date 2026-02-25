@@ -219,24 +219,39 @@ if [ "$NEW_ENV" = true ]; then
     [[ "$CONDA_DEFAULT_ENV" != "behavior" ]] && { echo "ERROR: Failed to activate environment"; exit 1; }
 
     # Install numpy and setuptools via pip
+    # numpy<2.0 required: Isaac Sim 4.5.0 internals are incompatible with numpy 2.x ABI,
+    # and torch 2.5.1 wheels are built against numpy 1.x ABI.
     echo "Installing numpy and setuptools..."
-    pip install "numpy<2" "setuptools<=79"
+    pip install "numpy>=1.23.5,<2.0" "setuptools<=79"
     
     # Install PyTorch via pip with CUDA support
+    # torch 2.5.1 is the last version built against numpy 1.x ABI.
+    # torch 2.6.0+ switched to numpy 2.x ABI which breaks Isaac Sim 4.5.0.
     echo "Installing PyTorch with CUDA $CUDA_VERSION support..."
     
     # Determine the CUDA version string for pip URL (e.g., cu126, cu124, etc.)
     CUDA_VER_SHORT=$(echo $CUDA_VERSION | sed 's/\.//g')  # e.g. convert 12.6 to 126
     
-    pip install torch==2.6.0 torchvision==0.21.0 torchaudio==2.6.0 --index-url https://download.pytorch.org/whl/cu${CUDA_VER_SHORT}
+    pip install torch==2.5.1 torchvision==0.20.1 torchaudio==2.5.1 --index-url https://download.pytorch.org/whl/cu${CUDA_VER_SHORT}
+    
+    # Re-pin numpy<2.0 in case torch pulled in a newer version
+    pip install "numpy>=1.23.5,<2.0"
     echo "✓ PyTorch installation completed"
 fi
 
 # Install BDDL
 if [ "$BDDL" = true ]; then
     echo "Installing BDDL..."
-    [ ! -d "bddl3" ] && { echo "ERROR: bddl directory not found"; exit 1; }
-    pip install -e "$WORKDIR/bddl3"
+    [ ! -d "bddl" ] && { echo "ERROR: bddl directory not found"; exit 1; }
+    pip install -e "$WORKDIR/bddl"
+    
+    # Fix bddl editable finder priority: insert before PathFinder to prevent
+    # the bddl/ source directory from being imported as a namespace package
+    BDDL_FINDER=$(python -c "import site; import glob; files=glob.glob(site.getsitepackages()[0]+'/__editable___bddl_*_finder.py'); print(files[0] if files else '')")
+    if [ -n "$BDDL_FINDER" ] && [ -f "$BDDL_FINDER" ]; then
+        sed -i 's/sys\.meta_path\.append(_EditableFinder)/sys.meta_path.insert(0, _EditableFinder)/' "$BDDL_FINDER"
+        echo "✓ Fixed bddl editable finder priority"
+    fi
 fi
 
 # Install OmniGibson with Isaac Sim
@@ -302,7 +317,7 @@ if [ "$OMNIGIBSON" = true ]; then
         }
         
         install_isaac_packages() {
-            local temp_dir=$(mktemp -d)
+            local local_pkg_dir="/mnt/public/mjwei/download_models/isaac_packages"
             local packages=(
                 "omniverse_kit-106.5.0.162521" "isaacsim_kernel-4.5.0.0" "isaacsim_app-4.5.0.0"
                 "isaacsim_core-4.5.0.0" "isaacsim_gui-4.5.0.0" "isaacsim_utils-4.5.0.0"
@@ -315,33 +330,36 @@ if [ "$OMNIGIBSON" = true ]; then
                 "isaacsim_extscache_kit-4.5.0.0" "isaacsim_extscache_kit_sdk-4.5.0.0"
             )
             
+            if [ ! -d "$local_pkg_dir" ]; then
+                echo "ERROR: Local package directory not found: $local_pkg_dir"
+                return 1
+            fi
+            
             local wheel_files=()
             for pkg in "${packages[@]}"; do
-                local pkg_name=${pkg%-*}
                 local filename="${pkg}-cp310-none-manylinux_2_34_x86_64.whl"
-                local url="https://pypi.nvidia.com/${pkg_name//_/-}/$filename"
-                local filepath="$temp_dir/$filename"
+                local filepath="$local_pkg_dir/$filename"
                 
-                echo "Downloading $pkg..."
-                if ! curl -sL "$url" -o "$filepath"; then
-                    echo "ERROR: Failed to download $pkg"
-                    rm -rf "$temp_dir"
+                # Check for GLIBC 2.31 version first if needed
+                if check_glibc_old; then
+                    local alt_filename="${pkg}-cp310-none-manylinux_2_31_x86_64.whl"
+                    local alt_filepath="$local_pkg_dir/$alt_filename"
+                    if [ -f "$alt_filepath" ]; then
+                        filepath="$alt_filepath"
+                    fi
+                fi
+                
+                if [ ! -f "$filepath" ]; then
+                    echo "ERROR: Wheel file not found: $filepath"
                     return 1
                 fi
                 
-                # Rename for older GLIBC
-                if check_glibc_old; then
-                    local new_filepath="${filepath/manylinux_2_34/manylinux_2_31}"
-                    mv "$filepath" "$new_filepath"
-                    filepath="$new_filepath"
-                fi
-                
+                echo "Found local package: $filepath"
                 wheel_files+=("$filepath")
             done
             
-            echo "Installing Isaac Sim packages..."
+            echo "Installing Isaac Sim packages from local directory..."
             pip install "${wheel_files[@]}"
-            rm -rf "$temp_dir"
             
             # Verify installation
             if ! python -c "import isaacsim" 2>/dev/null; then
@@ -373,15 +391,21 @@ if [ "$JOYLO" = true ]; then
     echo "Installing JoyLo..."
     [ ! -d "joylo" ] && { echo "ERROR: joylo directory not found"; exit 1; }
     pip install -e "$WORKDIR/joylo"
+    # joylo has no numpy upper bound; re-pin after install to prevent upgrade to 2.x
+    pip install "numpy>=1.23.5,<2.0"
 fi
 
 # Install Eval
 if [ "$EVAL" = true ]; then
-    # get torch version via pip and install corresponding torch-cluster
-    TORCH_VERSION=$(pip show torch | grep Version | cut -d " " -f 2)
-    pip install torch-cluster -f https://data.pyg.org/whl/torch-${TORCH_VERSION}.html
-    # install av and ffmpeg
-    conda install av "numpy<2" -c conda-forge -y
+    # Re-pin torch 2.5.1 in case lerobot (pulled by omnigibson[eval]) upgraded it
+    CUDA_VER_SHORT=$(echo $CUDA_VERSION | sed 's/\.//g')
+    pip install torch==2.5.1 torchvision==0.20.1 torchaudio==2.5.1 --index-url https://download.pytorch.org/whl/cu${CUDA_VER_SHORT}
+    # Install torch-cluster matching the pinned torch version
+    pip install torch-cluster -f https://data.pyg.org/whl/torch-2.5.1+cu${CUDA_VER_SHORT}.html
+    # install av
+    pip install av
+    # Re-pin numpy<2.0 to ensure no package has upgraded it
+    pip install "numpy>=1.23.5,<2.0"
 fi
     
 # Install asset pipeline

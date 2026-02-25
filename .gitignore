@@ -6,3 +6,8 @@ gha-creds-*.json
 # training
 outputs/
 /*.ipynb
+
+# datasets
+datasets/
+
+logs/

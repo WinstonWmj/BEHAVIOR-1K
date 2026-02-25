@@ -24,7 +24,7 @@ setuptools.setup(
         "hid",
         "inputs",
         "joycon-python",
-        "numpy<2",
+        "numpy>=1.23.5,<2.0",
         "numpy-quaternion",
         "Pillow",
         "pybullet",
