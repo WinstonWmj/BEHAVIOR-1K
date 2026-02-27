@@ -476,6 +476,17 @@ if __name__ == "__main__":
                         evaluator._write_video()
                     if evaluator.env._current_step % 1000 == 0:
                         logger.info(f"Current step: {evaluator.env._current_step}")
+                
+                # 在 episode 结束后，额外用 n_render_iterations=3 再 step 几帧让渲染追上
+                if config.write_video and terminated:
+                    for _ in range(3):
+                        # 执行空动作 + 多次渲染迭代，让画面追上物理状态
+                        obs, _, _, _, _ = evaluator.env.step(
+                            evaluator.robot_action, n_render_iterations=3
+                        )
+                        evaluator.obs = evaluator._preprocess_obs(obs)
+                        evaluator._write_video()
+                
                 # run metric end callbacks
                 for metric in evaluator.metrics:
                     metric.end_callback(evaluator.env)
