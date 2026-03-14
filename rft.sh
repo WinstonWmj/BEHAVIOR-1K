@@ -1,0 +1,11 @@
+TASK_NAME="loading_the_car"
+python OmniGibson/omnigibson/learning/eval_custom.py policy=websocket \
+    save_rollout=true \
+    perturb_pose=true \
+    task.name=$TASK_NAME \
+    log_path=./outputs/rft \
+    use_parallel_evaluator=true \
+    parallel_evaluator_start_idx=0 \
+    parallel_evaluator_end_idx=10 \
+    model.port=8001 \
+    env_wrapper._target_=omnigibson.learning.wrappers.RGBWrapper
