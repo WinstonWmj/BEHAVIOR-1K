@@ -449,6 +449,7 @@ if [ "$DATASET" = true ]; then
     echo "Downloading 2025 BEHAVIOR Challenge Task Instances..."
     python -c "from omnigibson.utils.asset_utils import download_2025_challenge_task_instances; download_2025_challenge_task_instances()" || {
         echo "ERROR: 2025 BEHAVIOR Challenge Task Instances installation failed"
+        echo "If connection to huggingface.co timed out, try: export HF_ENDPOINT=https://hf-mirror.com"
         exit 1
     }
 fi

@@ -247,16 +247,24 @@ def create_module_macros(module_path):
         MacroDict: addict/macro dictionary which can be populated with values
     """
     # Sanity check module path, make sure omnigibson/ is in the path
-    module_path = pathlib.Path(module_path)
-    omnigibson_path = pathlib.Path(__file__).parent
+    module_path = pathlib.Path(module_path).resolve()
+    omnigibson_path = pathlib.Path(__file__).parent.resolve()
 
     # Trim the .py, and anything before and including omnigibson/, and split into its appropriate parts
     try:
         subsections = module_path.with_suffix("").relative_to(omnigibson_path).parts
     except ValueError:
-        raise ValueError(
-            "module_path is expected to be a filepath including the omnigibson root directory, got: {module_path}!"
-        )
+        # module_path may be from a different OmniGibson installation (e.g. openpi-comet vs behavior-1k-solution)
+        # Derive omnigibson root from module_path by finding "omnigibson" in the path
+        try:
+            parts = module_path.parts
+            omnigibson_idx = parts.index("omnigibson")
+            omnigibson_path = pathlib.Path(*parts[: omnigibson_idx + 1])
+            subsections = module_path.with_suffix("").relative_to(omnigibson_path).parts
+        except (ValueError, IndexError):
+            raise ValueError(
+                f"module_path is expected to be a filepath including the omnigibson root directory, got: {module_path}!"
+            )
 
     # Create and return the generated sub-dictionary
     def _recursively_get_or_create_dict(dic, keys):

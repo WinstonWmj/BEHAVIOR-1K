@@ -558,9 +558,12 @@ def download_key():
         assert urlretrieve(path, get_key_path()), "Key download failed."
 
 
+BEHAVIOR_1K_ASSETS_MIN_VERSION = "3.7.2rc1"
+
+
 def download_behavior_1k_assets(accept_license=False):
     """
-    Download BEHAVIOR-1K dataset
+    Download BEHAVIOR-1K dataset. Automatically upgrades if installed version is below minimum required.
     """
     # Print user agreement
     if os.path.exists(get_key_path()):
@@ -574,23 +577,33 @@ def download_behavior_1k_assets(accept_license=False):
 
         download_key()
 
-    if os.path.exists(get_dataset_path("behavior-1k-assets")):
-        print("BEHAVIOR-1K dataset already installed.")
+    dataset_path = get_dataset_path("behavior-1k-assets")
+    if os.path.exists(dataset_path):
+        if check_minimum_behavior_1k_assets_version(BEHAVIOR_1K_ASSETS_MIN_VERSION):
+            print("BEHAVIOR-1K dataset already installed and up to date.")
+        else:
+            current = get_behavior_1k_assets_version() or "unknown"
+            print(
+                f"Installed version ({current}) is below required ({BEHAVIOR_1K_ASSETS_MIN_VERSION}). "
+                "Upgrading automatically..."
+            )
+            shutil.rmtree(dataset_path)
+            download_and_unpack_zipped_dataset("behavior-1k-assets")
     else:
         download_and_unpack_zipped_dataset("behavior-1k-assets")
 
 
 def download_2025_challenge_task_instances():
-    if os.path.exists(get_dataset_path("2025-challenge-task-instances")):
-        # cd and git pull
-        subprocess.run(
-            ["git", "-C", get_dataset_path("2025-challenge-task-instances"), "pull"],
-            shell=False,
-            check=True,
-        )
-        print("2025 BEHAVIOR Challenge Tasks Instances updated.")
-    else:
-        download_and_unpack_zipped_dataset("2025-challenge-task-instances")
+    """
+    Download 2025 BEHAVIOR Challenge Task Instances.
+    Uses huggingface_hub (respects HF_ENDPOINT for mirrors, e.g. HF_ENDPOINT=https://hf-mirror.com).
+    """
+    dataset_path = get_dataset_path("2025-challenge-task-instances")
+    if os.path.exists(dataset_path):
+        print("Updating 2025 BEHAVIOR Challenge Task Instances...")
+        shutil.rmtree(dataset_path)
+    download_and_unpack_zipped_dataset("2025-challenge-task-instances")
+    print("2025 BEHAVIOR Challenge Task Instances installed.")
 
 
 def decrypt_file(encrypted_filename, decrypted_filename):
