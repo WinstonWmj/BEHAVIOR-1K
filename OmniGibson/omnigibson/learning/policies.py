@@ -42,6 +42,7 @@ class LocalPolicy:
 class WebsocketPolicy:
     """
     Websocket policy for controlling the robot over a websocket connection.
+    Supports runtime host/port switching for multi-model orchestration.
     """
 
     def __init__(
@@ -52,6 +53,8 @@ class WebsocketPolicy:
         allow_reconnect: bool = False,
         **kwargs,
     ) -> None:
+        self._host = host
+        self._port = port
         logging.info(f"Creating websocket client policy with host: {host}, port: {port}")
         self.last_action = None
         self.policy = None
@@ -62,10 +65,23 @@ class WebsocketPolicy:
     def update_host(self, host: str, port: int) -> None:
         self.policy = WebsocketClientPolicy(host=host, port=port, allow_reconnect=self._allow_reconnect)
 
+    @property
+    def endpoint(self) -> str:
+        return f"{self._host}:{self._port}"
+
+    def update_host(self, host: str, port: int) -> None:
+        old_endpoint = self.endpoint
+        if hasattr(self.policy, "_ws") and self.policy._ws is not None:
+            try:
+                self.policy._ws.close()
+            except Exception:
+                pass
+        self._host = host
+        self._port = port
+        self.policy = WebsocketClientPolicy(host=host, port=port)
+        logging.info(f"WebsocketPolicy reconnected: {old_endpoint} -> {self.endpoint}")
+
     def forward(self, obs: dict, *args, **kwargs) -> th.Tensor:
-        if "need_new_action" in obs and not obs["need_new_action"] and self.last_action is not None:
-            return self.last_action
-        # convert observation to numpy
         obs = torch_to_numpy(obs)
         self.last_action = self.policy.act(obs).detach().cpu()
         return self.last_action
