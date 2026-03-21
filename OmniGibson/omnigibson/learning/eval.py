@@ -206,8 +206,8 @@ class Evaluator:
         """
         self.robot_action = self.policy.forward(obs=self.obs)
 
-        obs, _, terminated, truncated, info = self.env.step(self.robot_action, n_render_iterations=1)
-
+        obs, reward, terminated, truncated, info = self.env.step(self.robot_action, n_render_iterations=1)
+        self.last_step_reward = reward  # reward 已经是基于谓词进度的 delta 奖励（potential-based shaping）新满足一个谓词 → reward > 0，谓词退化 → reward < 0
         # process obs
         self.obs = self._preprocess_obs(obs)
 
@@ -218,7 +218,7 @@ class Evaluator:
 
         for metric in self.metrics:
             metric.step_callback(self.env)
-        return terminated, truncated
+        return terminated, truncated, reward, info
 
     @property
     def video_writer(self) -> Tuple[Container, Stream]:
@@ -469,13 +469,26 @@ if __name__ == "__main__":
                 for metric in evaluator.metrics:
                     metric.start_callback(evaluator.env)
                 while not done:
-                    terminated, truncated = evaluator.step()
+                    terminated, truncated, reward, info = evaluator.step()
                     if terminated or truncated:
                         done = True
                     if config.write_video:
                         evaluator._write_video()
-                    if evaluator.env._current_step % 1000 == 0:
+                    if evaluator.env._current_step % 100 == 0:
                         logger.info(f"Current step: {evaluator.env._current_step}")
+                        logger.info(f"Current reward: {reward}")
+                        logger.info(f"Current info: {info}")
+                        goal_status = info["done"]["goal_status"]
+                        satisfied_str = ", ".join(
+                            str(evaluator.env.task.activity_natural_language_goal_conditions[i])
+                            for i in goal_status["satisfied"]
+                        ) or "None"
+                        unsatisfied_str = ", ".join(
+                            str(evaluator.env.task.activity_natural_language_goal_conditions[i])
+                            for i in goal_status["unsatisfied"]
+                        ) or "None"
+                        logger.info(f"Goal satisfied: [{satisfied_str}]")
+                        logger.info(f"Goal unsatisfied: [{unsatisfied_str}]")
                 
                 # 在 episode 结束后，额外用 n_render_iterations=3 再 step 几帧让渲染追上
                 if config.write_video and terminated:
