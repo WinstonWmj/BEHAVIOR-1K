@@ -277,6 +277,85 @@ class PickUpFromAdvanced(BaseSkillEvaluator):
 
 
 # ---------------------------------------------------------------------------
+# Move To — Simple (robot-to-target 2D proximity)
+# ---------------------------------------------------------------------------
+
+class MoveToSimple(BaseSkillEvaluator):
+    """
+    Success = robot base moves within `distance_threshold` (XY-plane) of the
+    target object.
+
+    "move to" is a navigation skill: the robot must travel to the vicinity of
+    a goal object.  We measure 2D (XY) distance because the robot's base
+    height is largely irrelevant for ground locomotion.
+    """
+
+    def __init__(self, distance_threshold: float = 0.5):
+        self.distance_threshold = distance_threshold
+        self._target_obj = None
+        self._init_robot_pos: Optional[th.Tensor] = None
+        self._init_dist: Optional[float] = None
+        self._min_dist = float("inf")
+        self._success = False
+        self._robot_ref = None
+
+    def reset(self, evaluator, subtask_info):
+        obj_ids = subtask_info.get("object_id", [])
+        self._target_obj = None
+        self._init_robot_pos = None
+        self._init_dist = None
+        self._min_dist = float("inf")
+        self._success = False
+        self._robot_ref = evaluator.robot
+
+        if obj_ids:
+            self._target_obj = evaluator.find_scene_object(obj_ids[0])
+
+        if self._target_obj is not None and self._robot_ref is not None:
+            robot_pos = self._robot_ref.get_position_orientation()[0]
+            target_pos = self._target_obj.get_position_orientation()[0]
+            self._init_robot_pos = robot_pos[:2].clone()
+            self._init_dist = th.norm(robot_pos[:2] - target_pos[:2]).item()
+            self._min_dist = self._init_dist
+            logger.info(
+                f"[MoveTo-Simple] Tracking target '{obj_ids[0]}', "
+                f"init_dist={self._init_dist:.3f}m, threshold={self.distance_threshold}m"
+            )
+
+    def step(self, evaluator) -> dict:
+        if self._target_obj is None or self._robot_ref is None:
+            return {"dist_to_target": float("inf"), "success": False}
+
+        robot_pos = self._robot_ref.get_position_orientation()[0][:2]
+        target_pos = self._target_obj.get_position_orientation()[0][:2]
+        dist = th.norm(robot_pos - target_pos).item()
+        self._min_dist = min(self._min_dist, dist)
+
+        if dist <= self.distance_threshold:
+            self._success = True
+
+        return {
+            "dist_to_target": round(dist, 4),
+            "min_dist_to_target": round(self._min_dist, 4),
+            "success": self._success,
+        }
+
+    @property
+    def is_success(self) -> bool:
+        return self._success
+
+    @property
+    def summary(self) -> dict:
+        return {
+            "mode": "simple",
+            "init_dist": round(self._init_dist, 4) if self._init_dist is not None else None,
+            "min_dist_to_target": round(self._min_dist, 4),
+            "success": self._success,
+            "distance_threshold": self.distance_threshold,
+        }
+
+
+# ---------------------------------------------------------------------------
 # Registry
 # ---------------------------------------------------------------------------
 
@@ -284,6 +363,9 @@ SKILL_EVALUATOR_REGISTRY = {
     "pick up from": {
         "simple": PickUpFromSimple,
         "advanced": PickUpFromAdvanced,
+    },
+    "move to": {
+        "simple": MoveToSimple,
     },
 }
 

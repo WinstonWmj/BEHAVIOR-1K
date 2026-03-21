@@ -567,7 +567,8 @@ def _run_subtask_eval(config, logger):
                     else:
                         se_metrics = {}
 
-                    if terminated or truncated or step_count >= subtask_max_steps:
+                    skill_success_now = skill_eval.is_success if skill_eval else False
+                    if terminated or truncated or step_count >= subtask_max_steps or skill_success_now:
                         done = True
                     if config.write_video:
                         evaluator._write_video()

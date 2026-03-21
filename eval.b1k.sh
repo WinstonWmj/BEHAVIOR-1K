@@ -1,6 +1,6 @@
 export CUDA_VISIBLE_DEVICES=3
 
-LOG_BASE=./logs/openpi_comet/pi05-b1kpt50-cs32/skill-pickupfrom-simple/loading_the_car
+LOG_BASE=./logs/skill-comet/pi05_b1k-moveto-lr2.5e-step20k-200/10000-skill-simple
 DEMO_DATA_DIR=/mnt/public/mjwei/download_models/2025-challenge-demos
 TASKS_JSONL="${DEMO_DATA_DIR}/meta/tasks.jsonl"
 
@@ -54,11 +54,11 @@ for TASK in "${TASKS[@]}"; do
     model.host=localhost \
     model.port=8007 \
     demo_data_dir="${DEMO_DATA_DIR}" \
-    subtask_skill_filter='["pick up from"]' \
+    subtask_skill_filter='["move to"]' \
     subtask_max_steps_multiplier=3 \
-    eval_instance_ids="[0,1,2,3,4,5,6,7,8,9]" \
+    eval_instance_ids="[0,1,2,3,4]" \
     subtask_eval_mode=simple \
-    subtask_success_distance=0.1 \
+    subtask_success_distance=1.2 \
     env_wrapper._target_=omnigibson.learning.wrappers.RGBWrapper
 done
 
