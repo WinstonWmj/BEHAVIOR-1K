@@ -29,3 +29,11 @@ perturb_pose_seed: 42
 use_parallel_evaluator: false
 parallel_evaluator_start_idx: 0
 parallel_evaluator_end_idx: 10
+
+# subtask evaluation from demo data
+demo_data_dir: null  # path to 2025-challenge-demos root, enables subtask eval mode when set
+subtask_skill_filter: null  # list of skill_description to include, e.g. ["pick up from"], null = all
+subtask_max_steps_multiplier: 3  # max_steps = (end_frame - start_frame) * multiplier
+subtask_eval_mode: simple  # "simple" (displacement) or "advanced" (grasp+lift+stability)
+subtask_success_distance: 0.3  # [simple mode] displacement threshold in meters
+subtask_success_height: 0.15  # [advanced mode] lift height threshold in meters

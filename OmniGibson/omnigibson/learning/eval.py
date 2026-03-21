@@ -7,6 +7,7 @@ import numpy as np
 import omnigibson as og
 import omnigibson.utils.transform_utils as T
 import os
+import pandas as pd
 import sys
 import torch as th
 import traceback
@@ -35,7 +36,8 @@ from omnigibson.learning.utils.obs_utils import (
     create_video_writer,
     write_video,
 )
-from omnigibson.macros import gm, create_module_macros, macros
+from omnigibson.learning.skill_evaluators import create_skill_evaluator
+from omnigibson.macros import gm, create_module_macros
 from omnigibson.metrics import MetricBase, AgentMetric, TaskMetric
 from omnigibson.robots import BaseRobot
 from omnigibson.utils.asset_utils import get_task_instance_path
@@ -290,6 +292,67 @@ class Evaluator:
         self.env.scene.update_initial_file()
         self.env.scene.reset()
 
+    def load_subtask_init_state(self, demo_data_dir: str, task_index: int, episode_index: int, start_frame: int) -> None:
+        """
+        Load the robot's proprioceptive state from a parquet demo file at a given frame,
+        and teleport the robot to the corresponding pose and joint configuration.
+
+        Args:
+            demo_data_dir: root path of the 2025-challenge-demos directory.
+            task_index: task index (e.g. 13).
+            episode_index: full episode index (e.g. 130010).
+            start_frame: the frame index in the parquet to restore from.
+        """
+        parquet_path = os.path.join(
+            demo_data_dir, "data", f"task-{task_index:04d}", f"episode_{episode_index:08d}.parquet"
+        )
+        df = pd.read_parquet(parquet_path)
+        assert start_frame < len(df), (
+            f"start_frame {start_frame} >= parquet length {len(df)} for episode {episode_index}"
+        )
+        state = df.iloc[start_frame]["observation.state"]
+
+        robot_pos = th.tensor(state[140:143], dtype=th.float32)
+        ori_cos = state[143:146]
+        ori_sin = state[146:149]
+        euler = th.tensor(np.arctan2(ori_sin, ori_cos), dtype=th.float32)
+        robot_quat = T.euler2quat(euler)
+
+        joint_qpos_all = th.tensor(state[0:28], dtype=th.float32)
+
+        self.robot.set_position_orientation(robot_pos, robot_quat)
+        self.robot.set_joint_positions(joint_qpos_all)
+
+        for _ in range(25):
+            og.sim.step_physics()
+            self.robot.keep_still()
+
+        og.sim.render()
+        self.obs = self._preprocess_obs(self.env.get_obs()[0])
+
+        logger.info(
+            f"Loaded subtask init state: episode={episode_index}, frame={start_frame}, "
+            f"robot_pos={robot_pos.tolist()}, yaw={euler[2].item():.3f}"
+        )
+
+    def find_scene_object(self, obj_name: str):
+        """
+        Look up a scene object by its annotation name.
+        Falls back to searching the task's object_scope if the direct registry
+        lookup fails (e.g. for auto-generated instance names).
+        """
+        try:
+            return self.env.scene.object_registry("name", obj_name)
+        except Exception:
+            pass
+        task = self.env.task
+        if hasattr(task, "object_scope"):
+            for scope_name, scope_obj in task.object_scope.items():
+                if obj_name in scope_name or scope_name in obj_name:
+                    return scope_obj
+        logger.warning(f"Could not find scene object '{obj_name}'")
+        return None
+
     def _preprocess_obs(self, obs: dict) -> dict:
         """
         Preprocess the observation dictionary before passing it to the policy.
@@ -385,18 +448,194 @@ class Evaluator:
         sys.exit(0)
 
 
-if __name__ == "__main__":
-    register_omegaconf_resolvers()
-    # open yaml from task path
-    with hydra.initialize_config_dir(f"{Path(getsourcefile(lambda: 0)).parents[0]}/configs", version_base="1.1"):
-        config = hydra.compose("base_config.yaml", overrides=sys.argv[1:])
-    OmegaConf.resolve(config)
-    # set headless mode
-    gm.HEADLESS = config.headless
-    # set video path
+def _run_subtask_eval(config, logger):
+    """Subtask-level evaluation: iterate episodes × subtasks from demo data."""
+    task_idx = TASK_NAMES_TO_INDICES[config.task.name]
+    demo_data_dir = config.demo_data_dir
+    orchestrator_dir = Path(demo_data_dir) / "orchestrators" / f"task-{task_idx:04d}"
+    assert orchestrator_dir.exists(), f"Orchestrator dir not found: {orchestrator_dir}"
+
+    all_episode_dirs = sorted(
+        d for d in orchestrator_dir.iterdir()
+        if d.is_dir() and d.name.startswith("episode_")
+    )
+    all_episode_indices = [int(d.name.split("_")[1]) for d in all_episode_dirs]
+
+    if config.eval_instance_ids is not None:
+        episodes_to_run = [all_episode_indices[i] for i in config.eval_instance_ids]
+    else:
+        episodes_to_run = all_episode_indices
+
+    skill_filter = None
+    if config.subtask_skill_filter is not None:
+        skill_filter = set(config.subtask_skill_filter)
+
+    eval_mode = config.subtask_eval_mode
+    logger.info(f"Subtask eval mode: {len(episodes_to_run)} episodes, skill_filter={skill_filter}")
+    logger.info(f"Skill evaluator mode: {eval_mode}")
+
     if config.write_video:
         video_path = Path(config.log_path).expanduser() / "videos"
         video_path.mkdir(parents=True, exist_ok=True)
+    metrics_path = Path(config.log_path).expanduser() / "metrics"
+    metrics_path.mkdir(parents=True, exist_ok=True)
+
+    summary_results = []
+
+    with Evaluator(config) as evaluator:
+        logger.info("Starting subtask evaluation...")
+
+        for episode_index in episodes_to_run:
+            instance_id = int((episode_index // 10) % 1e3)
+            ep_dir = orchestrator_dir / f"episode_{episode_index:08d}"
+
+            subtask_files = sorted(
+                ep_dir.glob("subtask_*_annotated.json"),
+                key=lambda p: int(p.stem.split("_")[1]),
+            )
+
+            for subtask_file in subtask_files:
+                with open(subtask_file) as f:
+                    subtask_info = json.load(f)
+
+                if skill_filter is not None and subtask_info["skill_description"] not in skill_filter:
+                    continue
+
+                subtask_idx = int(subtask_file.stem.split("_")[1])
+                start_frame = subtask_info["start_frame"]
+                end_frame = subtask_info["end_frame"]
+                subtask_desc = subtask_info["cot_subtask_description"]
+                skill_desc = subtask_info["skill_description"]
+
+                logger.info("")
+                logger.info("=" * 60)
+                logger.info(
+                    f"Episode {episode_index} | Subtask {subtask_idx} | {subtask_desc}"
+                )
+                logger.info(
+                    f"Skill: {skill_desc} | Frames: {start_frame}-{end_frame} | Instance: {instance_id}"
+                )
+                logger.info("=" * 60)
+
+                evaluator.reset()
+                evaluator.load_task_instance(instance_id)
+                evaluator.reset()
+                evaluator.load_subtask_init_state(
+                    demo_data_dir, task_idx, episode_index, start_frame,
+                )
+
+                # --- Create skill evaluator ---
+                skill_eval_kwargs = {}
+                if eval_mode == "simple":
+                    skill_eval_kwargs["distance_threshold"] = config.subtask_success_distance
+                elif eval_mode == "advanced":
+                    skill_eval_kwargs["height_threshold"] = config.subtask_success_height
+                skill_eval = create_skill_evaluator(skill_desc, mode=eval_mode, **skill_eval_kwargs)
+                if skill_eval is not None:
+                    skill_eval.reset(evaluator, subtask_info)
+                else:
+                    logger.warning(f"No evaluator for skill '{skill_desc}', mode '{eval_mode}'")
+
+                subtask_duration = end_frame - start_frame
+                subtask_max_steps = int(subtask_duration * config.subtask_max_steps_multiplier)
+                if config.max_steps is not None:
+                    subtask_max_steps = config.max_steps
+                logger.info(f"Max steps: {subtask_max_steps} (duration={subtask_duration})")
+
+                done = False
+                step_count = 0
+                if config.write_video:
+                    video_name = (
+                        str(video_path)
+                        + f"/{config.task.name}_ep{episode_index}_st{subtask_idx}"
+                        + f"_{skill_desc.replace(' ', '_')}.mp4"
+                    )
+                    evaluator.video_writer = create_video_writer(
+                        fpath=video_name,
+                        resolution=(448, 672),
+                    )
+
+                for metric in evaluator.metrics:
+                    metric.start_callback(evaluator.env)
+
+                while not done:
+                    terminated, truncated, reward, info = evaluator.step()
+                    step_count += 1
+
+                    if skill_eval is not None:
+                        se_metrics = skill_eval.step(evaluator)
+                    else:
+                        se_metrics = {}
+
+                    if terminated or truncated or step_count >= subtask_max_steps:
+                        done = True
+                    if config.write_video:
+                        evaluator._write_video()
+                    if step_count % 100 == 0:
+                        logger.info(
+                            f"  step={step_count}, bddl_reward={reward:.4f}, "
+                            f"skill_eval={se_metrics}"
+                        )
+
+                if config.write_video and terminated:
+                    for _ in range(3):
+                        obs, _, _, _, _ = evaluator.env.step(
+                            evaluator.robot_action, n_render_iterations=3
+                        )
+                        evaluator.obs = evaluator._preprocess_obs(obs)
+                        evaluator._write_video()
+
+                for metric in evaluator.metrics:
+                    metric.end_callback(evaluator.env)
+
+                # --- Log skill evaluator results ---
+                skill_success = skill_eval.is_success if skill_eval else False
+                skill_summary = skill_eval.summary if skill_eval else {}
+
+                logger.info(
+                    f"Finished: steps={step_count}, terminated={terminated}, truncated={truncated}"
+                )
+                logger.info(f"Skill evaluator result: {skill_summary}")
+
+                subtask_result = {
+                    "episode_index": episode_index,
+                    "subtask_idx": subtask_idx,
+                    "skill_description": skill_desc,
+                    "cot_subtask_description": subtask_desc,
+                    "manipulating_object_id": subtask_info.get("manipulating_object_id", []),
+                    "steps": step_count,
+                    "subtask_success": skill_success,
+                    **skill_summary,
+                }
+                summary_results.append(subtask_result)
+
+                metrics_file = metrics_path / f"{config.task.name}_ep{episode_index}_st{subtask_idx}.json"
+                with open(metrics_file, "w") as f:
+                    json.dump(subtask_result, f, indent=2)
+
+                if config.write_video:
+                    evaluator.video_writer = None
+                    logger.info(f"Saved video: {video_name}")
+
+    # --- Aggregated summary ---
+    n_total = len(summary_results)
+    n_success = sum(1 for r in summary_results if r["subtask_success"])
+    logger.info("")
+    logger.info("=" * 60)
+    logger.info(f"SUBTASK EVAL SUMMARY: {n_success}/{n_total} succeeded ({100*n_success/max(n_total,1):.1f}%)")
+    if summary_results:
+        displacements = [r.get("max_displacement", 0) for r in summary_results]
+        logger.info(f"Avg max displacement: {np.mean(displacements):.4f}m")
+    logger.info("=" * 60)
+
+    summary_path = metrics_path / f"{config.task.name}_subtask_summary.json"
+    with open(summary_path, "w") as f:
+        json.dump({"success_rate": n_success / max(n_total, 1), "results": summary_results}, f, indent=2)
+    logger.info(f"Summary saved: {summary_path}")
+
+
+def _run_instance_eval(config, logger):
+    """Original instance-level evaluation (unchanged logic)."""
     assert not (
         config.eval_on_train_instances and config.test_hidden
     ), "Cannot eval on train instances and test hidden instances simultaneously."
@@ -433,7 +672,6 @@ if __name__ == "__main__":
         assert set(instances_to_run).issubset(
             set(range(m.NUM_EVAL_INSTANCES))
         ), f"eval instance ids must be in range({m.NUM_EVAL_INSTANCES})"
-        # load csv file
         task_instance_csv_path = os.path.join(
             gm.DATA_PATH, "2025-challenge-task-instances", "metadata", "test_instances.csv"
         )
@@ -444,7 +682,10 @@ if __name__ == "__main__":
         ), f"Task name from config {config.task.name} does not match task name from csv {lines[TASK_NAMES_TO_INDICES[config.task.name]][1]}"
         test_instances = lines[TASK_NAMES_TO_INDICES[config.task.name]][2].strip().split(",")
         instances_to_run = [int(test_instances[i]) for i in instances_to_run]
-    # establish metrics
+
+    if config.write_video:
+        video_path = Path(config.log_path).expanduser() / "videos"
+        video_path.mkdir(parents=True, exist_ok=True)
     metrics = {}
     metrics_path = Path(config.log_path).expanduser() / "metrics"
     metrics_path.mkdir(parents=True, exist_ok=True)
@@ -465,7 +706,6 @@ if __name__ == "__main__":
                         fpath=video_name,
                         resolution=(448, 672),
                     )
-                # run metric start callbacks
                 for metric in evaluator.metrics:
                     metric.start_callback(evaluator.env)
                 while not done:
@@ -489,32 +729,40 @@ if __name__ == "__main__":
                         ) or "None"
                         logger.info(f"Goal satisfied: [{satisfied_str}]")
                         logger.info(f"Goal unsatisfied: [{unsatisfied_str}]")
-                
-                # 在 episode 结束后，额外用 n_render_iterations=3 再 step 几帧让渲染追上
+
                 if config.write_video and terminated:
                     for _ in range(3):
-                        # 执行空动作 + 多次渲染迭代，让画面追上物理状态
                         obs, _, _, _, _ = evaluator.env.step(
                             evaluator.robot_action, n_render_iterations=3
                         )
                         evaluator.obs = evaluator._preprocess_obs(obs)
                         evaluator._write_video()
-                
-                # run metric end callbacks
+
                 for metric in evaluator.metrics:
                     metric.end_callback(evaluator.env)
                 logger.info(f"Evaluation finished at step {evaluator.env._current_step}.")
                 logger.info(f"Evaluation exit state: {terminated}, {truncated}")
                 logger.info(f"Total trials: {evaluator.n_trials}")
                 logger.info(f"Total success trials: {evaluator.n_success_trials}")
-                # gather metric results and write to file
                 for metric in evaluator.metrics:
                     metrics.update(metric.gather_results())
                 with open(metrics_path / f"{config.task.name}_{idx}_{epi}.json", "w") as f:
                     json.dump(metrics, f)
-                # reset video writer
                 if config.write_video:
                     evaluator.video_writer = None
                     logger.info(f"Saved video to {video_name}")
                 else:
                     logger.warning("No observations were recorded.")
+
+
+if __name__ == "__main__":
+    register_omegaconf_resolvers()
+    with hydra.initialize_config_dir(f"{Path(getsourcefile(lambda:0)).parents[0]}/configs", version_base="1.1"):
+        config = hydra.compose("base_config.yaml", overrides=sys.argv[1:])
+    OmegaConf.resolve(config)
+    gm.HEADLESS = config.headless
+
+    if config.demo_data_dir is not None:
+        _run_subtask_eval(config, logger)
+    else:
+        _run_instance_eval(config, logger)
