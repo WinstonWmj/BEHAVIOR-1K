@@ -43,7 +43,7 @@ from omnigibson.macros import gm
 from omnigibson.metrics import AgentMetric
 from omnigibson.metrics import MetricBase
 from omnigibson.metrics import TaskMetric
-from omnigibson.robots import BaseRobot
+from omnigibson.robots import Robot
 from omnigibson.utils.asset_utils import get_task_instance_path
 from omnigibson.utils.python_utils import recursively_convert_to_torch
 import omnigibson.utils.transform_utils as T
@@ -172,11 +172,11 @@ class Evaluator:
         env = instantiate(env_wrapper, env=env)
         return env
 
-    def load_robot(self) -> BaseRobot:
+    def load_robot(self) -> Robot:
         """
         Loads and returns the robot instance from the environment.
         Returns:
-            BaseRobot: The robot instance loaded from the environment.
+            Robot: The robot instance loaded from the environment.
         """
         robot = self.env.scene.object_registry("name", "robot_r1")
         return robot
@@ -301,16 +301,16 @@ class Evaluator:
         for tro_key, tro_state in tro_state.items():
             if tro_key == "robot_poses":
                 presampled_robot_poses = tro_state
-                robot_pos = presampled_robot_poses[self.robot.model_name][0]["position"]
-                robot_quat = presampled_robot_poses[self.robot.model_name][0]["orientation"]
+                robot_pos = presampled_robot_poses["R1Pro"][0]["position"]
+                robot_quat = presampled_robot_poses["R1Pro"][0]["orientation"]
                 self.robot.set_position_orientation(robot_pos, robot_quat)
 
                 if self.cfg.perturb_pose:
                     perturbed_pos, perturbed_quat = self._pose_perturbator.perturb_robot_root_pose(
                         robot_pos, robot_quat
                     )
-                    presampled_robot_poses[self.robot.model_name][0]["position"] = perturbed_pos
-                    presampled_robot_poses[self.robot.model_name][0]["orientation"] = perturbed_quat
+                    presampled_robot_poses["R1Pro"][0]["position"] = perturbed_pos
+                    presampled_robot_poses["R1Pro"][0]["orientation"] = perturbed_quat
 
                 # Write robot poses to scene metadata
                 self.env.scene.write_task_metadata(key=tro_key, data=tro_state)

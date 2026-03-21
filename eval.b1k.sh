@@ -1,11 +1,11 @@
-export CUDA_VISIBLE_DEVICES=3
+export CUDA_VISIBLE_DEVICES=0
 
-LOG_BASE=./logs/skill-comet/pi05_b1k-moveto-lr2.5e-step20k-200/10000-skill-simple
-DEMO_DATA_DIR=/mnt/public/mjwei/download_models/2025-challenge-demos
+LOG_BASE=./logs/skill_comet/pi05_b1k-pickupfrom-lr2.5e-step20k/skill-pickupfrom-simple-3/
+DEMO_DATA_DIR=/home/dell/mjwei/download_models/2025-challenge-demos
 TASKS_JSONL="${DEMO_DATA_DIR}/meta/tasks.jsonl"
 
 # 用法:
-#   ./eval.b1k.sh 13 0 7
+#   ./eval.b1k.sh 0 1 2 3 4
 #   ./eval.b1k.sh 3 4 5 6 7 8 9 10 11 12 14 15 16 17 18 19 20 21 22 23 24 25 26 27 28 29 30 31 32 33 34 35 36 37 38 39 40 41 42 43 44 45 46 47 48 49
 # 若不传参，则默认评测 task_index=13 (loading_the_car)
 if [ "$#" -gt 0 ]; then
@@ -54,11 +54,11 @@ for TASK in "${TASKS[@]}"; do
     model.host=localhost \
     model.port=8007 \
     demo_data_dir="${DEMO_DATA_DIR}" \
-    subtask_skill_filter='["move to"]' \
+    subtask_skill_filter='["pick up from"]' \
     subtask_max_steps_multiplier=3 \
-    eval_instance_ids="[0,1,2,3,4]" \
+    eval_instance_ids="[0,1,2,3,4,5,6,7,8,9]" \
     subtask_eval_mode=simple \
-    subtask_success_distance=1.2 \
+    subtask_success_distance=0.1 \
     env_wrapper._target_=omnigibson.learning.wrappers.RGBWrapper
 done
 

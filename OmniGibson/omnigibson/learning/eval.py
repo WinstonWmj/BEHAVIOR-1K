@@ -39,7 +39,7 @@ from omnigibson.learning.utils.obs_utils import (
 from omnigibson.learning.skill_evaluators import create_skill_evaluator
 from omnigibson.macros import gm, create_module_macros
 from omnigibson.metrics import MetricBase, AgentMetric, TaskMetric
-from omnigibson.robots import BaseRobot
+from omnigibson.robots import Robot
 from omnigibson.utils.asset_utils import get_task_instance_path
 from omnigibson.utils.python_utils import recursively_convert_to_torch
 from pathlib import Path
@@ -57,8 +57,8 @@ gm.USE_GPU_DYNAMICS = False
 gm.ENABLE_TRANSITION_RULES = True
 
 # Set grasp window to larger value to account for hard grasps
-with macros.unlocked():
-    macros.robots.manipulation_robot.GRASP_WINDOW = 0.75
+with gm.unlocked():
+    gm.robots.manipulation_robot.GRASP_WINDOW = 0.75
 
 
 # create module logger
@@ -159,11 +159,11 @@ class Evaluator:
         env = instantiate(env_wrapper, env=env)
         return env
 
-    def load_robot(self) -> BaseRobot:
+    def load_robot(self) -> Robot:
         """
         Loads and returns the robot instance from the environment.
         Returns:
-            BaseRobot: The robot instance loaded from the environment.
+            Robot: The robot instance loaded from the environment.
         """
         robot = self.env.scene.object_registry("name", "robot_r1")
         return robot
@@ -272,8 +272,9 @@ class Evaluator:
         for tro_key, tro_state in tro_state.items():
             if tro_key == "robot_poses":
                 presampled_robot_poses = tro_state
-                robot_pos = presampled_robot_poses[self.robot.model][0]["position"]
-                robot_quat = presampled_robot_poses[self.robot.model][0]["orientation"]
+                # tro_state uses "R1Pro"; robot.model is "r1pro"
+                robot_pos = presampled_robot_poses["R1Pro"][0]["position"]
+                robot_quat = presampled_robot_poses["R1Pro"][0]["orientation"]
                 self.robot.set_position_orientation(robot_pos, robot_quat)
                 # Write robot poses to scene metadata
                 self.env.scene.write_task_metadata(key=tro_key, data=tro_state)
