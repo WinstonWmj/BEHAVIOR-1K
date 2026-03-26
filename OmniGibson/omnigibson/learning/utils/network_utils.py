@@ -11,13 +11,16 @@ import numpy as np
 import time
 import torch as th
 import traceback
-import websockets.asyncio.server as _server
-import websockets.sync.client
 import websockets
 import requests
 from copy import deepcopy
 from omnigibson.macros import gm
 from typing import Any, Dict, Optional, Tuple
+
+try:
+    import websockets.sync.client as _ws_sync_client
+except Exception:
+    _ws_sync_client = None
 
 logger = logging.getLogger(__name__)
 logger.setLevel(logging.INFO)
@@ -50,7 +53,7 @@ class WebsocketClientPolicy:
     def get_server_metadata(self) -> Dict:
         return self._server_metadata
 
-    def _wait_for_server(self) -> Tuple[websockets.sync.client.ClientConnection, Dict]:
+    def _wait_for_server(self) -> Tuple[Any, Dict]:
         # TODO [Wensi]: use URL parser instead of this
         # Extract host and port for health check
         host_port = self._uri.replace("ws://", "").replace("wss://", "")
@@ -75,15 +78,28 @@ class WebsocketClientPolicy:
         # Now attempt websocket connection (rest of the code remains the same)
         while True:
             try:
+                assert _ws_sync_client is not None, "websockets.sync.client is unavailable in this environment"
                 headers = {"Authorization": f"Api-Key {self._api_key}"} if self._api_key else None
-                conn = websockets.sync.client.connect(
-                    self._uri,
+                connect_kwargs = dict(
                     compression=None,
                     max_size=None,
                     additional_headers=headers,
                     ping_interval=60,
                     ping_timeout=300,
                 )
+                try:
+                    conn = _ws_sync_client.connect(
+                        self._uri,
+                        **connect_kwargs,
+                    )
+                except TypeError:
+                    # Some websocket client variants do not accept ping kwargs.
+                    connect_kwargs.pop("ping_interval", None)
+                    connect_kwargs.pop("ping_timeout", None)
+                    conn = _ws_sync_client.connect(
+                        self._uri,
+                        **connect_kwargs,
+                    )
                 metadata = unpackb(conn.recv())
                 logger.info("Connected to server!")
                 return conn, metadata
@@ -154,7 +170,12 @@ class WebsocketPolicyServer:
 
     async def run(self):
         logger.info(f"Starting websocket server on {self._host}:{self._port}...")
-        async with _server.serve(
+        try:
+            import websockets.asyncio.server as ws_async_server
+        except Exception:
+            import websockets.legacy.server as ws_async_server
+
+        async with ws_async_server.serve(
             self._handler,
             self._host,
             self._port,
