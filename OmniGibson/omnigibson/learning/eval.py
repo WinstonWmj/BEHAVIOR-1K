@@ -137,6 +137,17 @@ class Evaluator:
         robot_type = self.cfg.robot.type
         assert robot_type == "R1Pro", f"Got invalid robot type: {robot_type}, only R1Pro is supported."
         cfg = generate_basic_environment_config(task_name=task_name, task_cfg=task_cfg)
+        cfg["task"]["reward_config"]["reward_mode"] = self.cfg.instance_reward_mode
+        if self.cfg.instance_reward_mode in {"task", "combined"}:
+            cfg["task"]["reward_config"]["task_specific_reward_name"] = task_name
+            cfg["task"]["reward_config"]["task_specific_reward_kwargs"] = OmegaConf.to_container(
+                self.cfg.task_specific_reward_kwargs, resolve=True
+            )
+        logger.info(
+            "Using reward mode '%s' for task '%s'",
+            cfg["task"]["reward_config"]["reward_mode"],
+            task_name,
+        )
         if self.cfg.partial_scene_load:
             relevant_rooms = get_task_relevant_room_types(activity_name=task_name)
             relevant_rooms = augment_rooms(relevant_rooms, task_cfg["scene_model"], task_name)

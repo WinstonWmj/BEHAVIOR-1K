@@ -52,6 +52,57 @@ def delay_termination_until_stage_completion(info: Dict) -> Dict:
     return info
 
 
+def _format_scalar(value) -> str:
+    if isinstance(value, bool):
+        return str(value)
+    if isinstance(value, float):
+        return f"{value:.3f}"
+    return str(value)
+
+
+def _get_active_stage_payload(info: Dict) -> tuple[str | None, Dict]:
+    reward_info = extract_sequential_reward_info(info)
+    current_stage_name = reward_info.get("current_stage_name")
+    stage_infos = reward_info.get("stage_infos")
+    if not isinstance(current_stage_name, str) or not isinstance(stage_infos, dict):
+        return None, {}
+    active_stage_info = stage_infos.get(current_stage_name)
+    if not isinstance(active_stage_info, dict):
+        return current_stage_name, {}
+    return current_stage_name, active_stage_info
+
+
+def _format_active_stage_lines(info: Dict) -> List[str]:
+    reward_info = extract_sequential_reward_info(info)
+    current_stage_name, active_stage_info = _get_active_stage_payload(reward_info)
+    if current_stage_name is None:
+        return []
+
+    lines = []
+    stage_rewards = reward_info.get("stage_rewards")
+    if isinstance(stage_rewards, dict) and current_stage_name in stage_rewards:
+        lines.append(f"active_stage_reward: {current_stage_name}={_format_scalar(stage_rewards[current_stage_name])}")
+
+    condition_parts = []
+    metric_parts = []
+    for key, value in active_stage_info.items():
+        if key == "reward":
+            continue
+        if isinstance(value, bool):
+            condition_parts.append(f"{key}={value}")
+        elif isinstance(value, (int, float)):
+            metric_parts.append(f"{key}={_format_scalar(value)}")
+        else:
+            condition_parts.append(f"{key}={value}")
+
+    if condition_parts:
+        lines.append("active_conditions: " + ", ".join(condition_parts))
+    if metric_parts:
+        lines.append("active_metrics: " + ", ".join(metric_parts))
+
+    return lines
+
+
 def format_stage_status_chain(info: Dict) -> str | None:
     """
     Convert sequential reward info into a compact ordered stage chain.
@@ -103,6 +154,8 @@ def format_video_info_lines(info: Dict, step: int, reward: float) -> List[str]:
             + ", ".join(f"{stage_name}={stage_reward:.3f}" for stage_name, stage_reward in stage_rewards.items())
         )
 
+    lines.extend(_format_active_stage_lines(reward_info))
+
     done_info = raw_info.get("done")
     if isinstance(done_info, dict) and "success" in done_info:
         lines.append(f"task_done: success={done_info['success']}")
@@ -136,6 +189,8 @@ def summarize_stage_progress(info: Dict) -> List[str]:
             "stage_rewards: "
             + ", ".join(f"{stage_name}={stage_reward:.3f}" for stage_name, stage_reward in stage_rewards.items())
         )
+
+    lines.extend(_format_active_stage_lines(reward_info))
 
     done_info = raw_info.get("done")
     if isinstance(done_info, dict) and "success" in done_info:
