@@ -72,7 +72,41 @@ def _get_active_stage_payload(info: Dict) -> tuple[str | None, Dict]:
     return current_stage_name, active_stage_info
 
 
-def _format_active_stage_lines(info: Dict) -> List[str]:
+_VIDEO_ACTIVE_CONDITION_KEYS = {
+    "move_to_radio": ["completed"],
+    "pickup_from_support": [
+        "completed",
+        "grasp_ready",
+        "lifted_off_support",
+        "pickup_success_now",
+        "has_picked_up",
+    ],
+    "press_radio": ["completed", "toggled_on", "press_success_now"],
+    "place_on_support": [
+        "completed",
+        "on_support",
+        "released",
+        "place_height_ok",
+        "bddl_success",
+        "support_evidence",
+        "placedown_success_now",
+    ],
+}
+
+_VIDEO_ACTIVE_METRIC_KEYS = {
+    "move_to_radio": ["eef_to_obj_distance", "success_threshold"],
+    "pickup_from_support": [
+        "eef_to_obj_distance",
+        "height_above_support",
+        "height_above_initial",
+        "success_height",
+    ],
+    "press_radio": ["eef_to_toggle_distance", "toggle_steps", "toggle_steps_required", "success_threshold"],
+    "place_on_support": ["eef_to_obj_distance", "height_above_support", "success_height"],
+}
+
+
+def _format_active_stage_lines(info: Dict, *, concise: bool = False) -> List[str]:
     reward_info = extract_sequential_reward_info(info)
     current_stage_name, active_stage_info = _get_active_stage_payload(reward_info)
     if current_stage_name is None:
@@ -85,14 +119,21 @@ def _format_active_stage_lines(info: Dict) -> List[str]:
 
     condition_parts = []
     metric_parts = []
+    allowed_condition_keys = set(_VIDEO_ACTIVE_CONDITION_KEYS.get(current_stage_name, [])) if concise else None
+    allowed_metric_keys = set(_VIDEO_ACTIVE_METRIC_KEYS.get(current_stage_name, [])) if concise else None
+
     for key, value in active_stage_info.items():
         if key == "reward":
             continue
         if isinstance(value, bool):
+            if allowed_condition_keys is not None and key not in allowed_condition_keys:
+                continue
             condition_parts.append(f"{key}={value}")
         elif isinstance(value, (int, float)):
+            if allowed_metric_keys is not None and key not in allowed_metric_keys:
+                continue
             metric_parts.append(f"{key}={_format_scalar(value)}")
-        else:
+        elif not concise:
             condition_parts.append(f"{key}={value}")
 
     if condition_parts:
@@ -154,7 +195,7 @@ def format_video_info_lines(info: Dict, step: int, reward: float) -> List[str]:
             + ", ".join(f"{stage_name}={stage_reward:.3f}" for stage_name, stage_reward in stage_rewards.items())
         )
 
-    lines.extend(_format_active_stage_lines(reward_info))
+    lines.extend(_format_active_stage_lines(reward_info, concise=True))
 
     done_info = raw_info.get("done")
     if isinstance(done_info, dict) and "success" in done_info:
@@ -190,7 +231,7 @@ def summarize_stage_progress(info: Dict) -> List[str]:
             + ", ".join(f"{stage_name}={stage_reward:.3f}" for stage_name, stage_reward in stage_rewards.items())
         )
 
-    lines.extend(_format_active_stage_lines(reward_info))
+    lines.extend(_format_active_stage_lines(reward_info, concise=False))
 
     done_info = raw_info.get("done")
     if isinstance(done_info, dict) and "success" in done_info:
