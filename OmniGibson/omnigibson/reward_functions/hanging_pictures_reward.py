@@ -1,4 +1,5 @@
 import json
+import logging
 import math
 import os
 import re
@@ -11,6 +12,8 @@ from omnigibson.object_states.attached_to import AttachedTo
 from omnigibson.object_states.on_top import OnTop
 from omnigibson.object_states.touching import Touching
 from omnigibson.reward_functions.sequential_task_reward import SequentialTaskReward
+
+log = logging.getLogger("evaluator")
 
 
 class HangingPicturesReward(SequentialTaskReward):
@@ -34,6 +37,7 @@ class HangingPicturesReward(SequentialTaskReward):
         pickup_grasp_distance_threshold=0.18,
         pickup_progress_scale=3.0,
         pickup_dense_scale=0.35,
+        pickup_confirmation_steps=3,
         move_to_hang_success_threshold=0.14,
         move_to_hang_progress_scale=6.0,
         move_to_hang_dense_scale=0.3,
@@ -54,6 +58,7 @@ class HangingPicturesReward(SequentialTaskReward):
         self.pickup_grasp_distance_threshold = pickup_grasp_distance_threshold
         self.pickup_progress_scale = pickup_progress_scale
         self.pickup_dense_scale = pickup_dense_scale
+        self.pickup_confirmation_steps = pickup_confirmation_steps
         self.move_to_hang_success_threshold = move_to_hang_success_threshold
         self.move_to_hang_progress_scale = move_to_hang_progress_scale
         self.move_to_hang_dense_scale = move_to_hang_dense_scale
@@ -75,6 +80,7 @@ class HangingPicturesReward(SequentialTaskReward):
         self._initial_poster_center_height = None
         self._has_left_bar = False
         self._has_picked_up = False
+        self._pickup_success_streak = 0
 
         super().__init__(stage_completion_bonus=stage_completion_bonus)
 
@@ -93,6 +99,14 @@ class HangingPicturesReward(SequentialTaskReward):
         self._initial_poster_center_height = self._get_obj_center(self._poster_obj)[2].item() if self._poster_obj else None
         self._has_left_bar = False
         self._has_picked_up = False
+        self._pickup_success_streak = 0
+        log.info(
+            "HangingPicturesReward reset: annotation_exists=%s poster=%s bar=%s wall_nail=%s",
+            bool(self.annotation_path and os.path.exists(self.annotation_path)),
+            self._safe_name(self._poster_obj),
+            self._safe_name(self._bar_obj),
+            self._safe_name(self._wall_nail_obj),
+        )
         super().reset(task, env)
 
     def _build_stages(self, task, env):
@@ -146,12 +160,15 @@ class HangingPicturesReward(SequentialTaskReward):
             in_hand_strict = self._is_target_in_hand(robot, self._poster_obj)
             in_hand_inferred = self._is_target_in_hand_inferred(eef_distance)
             on_bar, on_top_debug = self._is_supported_by_surface(self._poster_obj, self._bar_obj)
-            grasp_ready = in_hand_strict or in_hand_inferred or eef_distance <= self.pickup_grasp_distance_threshold
-            lifted_off_bar = (not on_bar) and (
+            support_ready = self._bar_obj is not None and self._bar_surface_height is not None
+            grasp_ready = in_hand_strict or in_hand_inferred
+            lifted_off_bar = support_ready and (not on_bar) and (
                 height_gap >= self.pickup_success_height or lift_from_initial >= self.pickup_success_height
             )
             self._has_left_bar = self._has_left_bar or lifted_off_bar
-            pickup_success_now = self._has_left_bar and grasp_ready
+            pickup_candidate = support_ready and lifted_off_bar and grasp_ready
+            self._pickup_success_streak = self._pickup_success_streak + 1 if pickup_candidate else 0
+            pickup_success_now = self._pickup_success_streak >= self.pickup_confirmation_steps
             self._has_picked_up = self._has_picked_up or pickup_success_now
 
             progress_reward = self._progress_reward(
@@ -174,6 +191,7 @@ class HangingPicturesReward(SequentialTaskReward):
                     "poster_obj_name": self._safe_name(self._poster_obj),
                     "bar_obj_name": self._safe_name(self._bar_obj),
                     "bar_surface_height": self._bar_surface_height if self._bar_surface_height is not None else -1.0,
+                    "support_ready": support_ready,
                     "on_bar": on_bar,
                     "ontop_state_raw": self._is_on_support(self._poster_obj, self._bar_obj),
                     **on_top_debug,
@@ -181,10 +199,13 @@ class HangingPicturesReward(SequentialTaskReward):
                     "in_hand_inferred": in_hand_inferred,
                     "grasp_ready": grasp_ready,
                     "lifted_off_bar": lifted_off_bar,
+                    "pickup_candidate": pickup_candidate,
+                    "pickup_success_streak": self._pickup_success_streak,
                     "pickup_success_now": pickup_success_now,
                     "has_left_bar": self._has_left_bar,
                     "has_picked_up": self._has_picked_up,
                     "annotation_path_exists": bool(self.annotation_path and os.path.exists(self.annotation_path)),
+                    "pickup_confirmation_steps": self.pickup_confirmation_steps,
                 },
             }
 
@@ -194,11 +215,16 @@ class HangingPicturesReward(SequentialTaskReward):
                 distance = attach_distance
             else:
                 distance = self._get_min_eef_distance_to_obj(robot, self._wall_nail_obj)
-            progress_reward = self._progress_reward(
-                stage_state["prev_distance"], distance, self.move_to_hang_progress_scale, invert=True
-            )
-            dense_reward = self._exp_distance_reward(distance, self.move_to_hang_dense_scale)
-            stage_state["prev_distance"] = distance
+            if math.isfinite(distance):
+                progress_reward = self._progress_reward(
+                    stage_state["prev_distance"], distance, self.move_to_hang_progress_scale, invert=True
+                )
+                dense_reward = self._exp_distance_reward(distance, self.move_to_hang_dense_scale)
+                stage_state["prev_distance"] = distance
+            else:
+                progress_reward = 0.0
+                dense_reward = 0.0
+                stage_state["prev_distance"] = None
             completed = distance <= self.move_to_hang_success_threshold
             return {
                 "reward": progress_reward + dense_reward,

@@ -139,10 +139,24 @@ class Evaluator:
         cfg = generate_basic_environment_config(task_name=task_name, task_cfg=task_cfg)
         cfg["task"]["reward_config"]["reward_mode"] = self.cfg.instance_reward_mode
         if self.cfg.instance_reward_mode in {"task", "combined"}:
+            task_reward_kwargs = OmegaConf.to_container(self.cfg.task_specific_reward_kwargs, resolve=True) or {}
+            demo_expert_data_dir = self.cfg.demo_expert_data_dir
+            demo_expert_episode_index = self.cfg.demo_expert_episode_index
+            if demo_expert_data_dir is not None and demo_expert_episode_index is not None:
+                annotation_path = os.path.join(
+                    demo_expert_data_dir,
+                    "annotations",
+                    f"task-{task_idx:04d}",
+                    f"episode_{int(demo_expert_episode_index):08d}.json",
+                )
+                if os.path.exists(annotation_path):
+                    task_reward_kwargs["annotation_path"] = annotation_path
+                    logger.info("Using task reward annotation: %s", annotation_path)
+                else:
+                    logger.warning("Task reward annotation not found: %s", annotation_path)
+
             cfg["task"]["reward_config"]["task_specific_reward_name"] = task_name
-            cfg["task"]["reward_config"]["task_specific_reward_kwargs"] = OmegaConf.to_container(
-                self.cfg.task_specific_reward_kwargs, resolve=True
-            )
+            cfg["task"]["reward_config"]["task_specific_reward_kwargs"] = task_reward_kwargs
         logger.info(
             "Using reward mode '%s' for task '%s'",
             cfg["task"]["reward_config"]["reward_mode"],
