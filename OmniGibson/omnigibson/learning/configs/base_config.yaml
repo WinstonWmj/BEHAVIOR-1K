@@ -37,3 +37,13 @@ subtask_max_steps_multiplier: 3  # max_steps = (end_frame - start_frame) * multi
 subtask_eval_mode: simple  # "simple" (displacement) or "advanced" (grasp+lift+stability)
 subtask_success_distance: 0.3  # [simple mode] displacement threshold in meters
 subtask_success_height: 0.15  # [advanced mode] lift height threshold in meters
+
+# instance-level reward selection
+instance_reward_mode: potential  # "potential", "task", or "combined"
+task_specific_reward_kwargs: {}
+
+# parquet demo expert policy support
+demo_expert_data_dir: null  # path to 2025-challenge-demos root for parquet-backed demo replay
+demo_expert_episode_index: null  # full episode index, e.g. 10 for task-0000/episode_00000010.parquet
+demo_expert_start_frame: 0  # first parquet frame / action index to replay
+demo_expert_require_train_instance_match: true  # ensure eval instance matches the training demo instance

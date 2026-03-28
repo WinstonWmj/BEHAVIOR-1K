@@ -1,5 +1,6 @@
 import os
 import json
+from copy import deepcopy
 from pathlib import Path
 import random
 
@@ -21,6 +22,8 @@ from omnigibson.macros import gm
 from omnigibson.objects.dataset_object import DatasetObject
 from omnigibson.object_states import Pose
 from omnigibson.reward_functions.potential_reward import PotentialReward
+from omnigibson.reward_functions.hanging_pictures_reward import HangingPicturesReward
+from omnigibson.reward_functions.turning_on_radio_reward import TurningOnRadioReward
 from omnigibson.scenes.scene_base import Scene
 from omnigibson.scenes.traversable_scene import TraversableScene
 from omnigibson.tasks.task_base import BaseTask
@@ -204,13 +207,34 @@ class BehaviorTask(BaseTask):
         return terminations
 
     def _create_reward_functions(self):
-        # Initialize reward functions dict and fill in with Potential reward
         rewards = dict()
+        reward_mode = self._reward_config["reward_mode"]
+        task_reward_name = self._reward_config["task_specific_reward_name"] or self.activity_name
+        task_reward_kwargs = deepcopy(self._reward_config["task_specific_reward_kwargs"])
 
-        rewards["potential"] = PotentialReward(
-            potential_fcn=self.get_potential,
-            r_potential=self._reward_config["r_potential"],
-        )
+        if reward_mode in {"potential", "combined"}:
+            rewards["potential"] = PotentialReward(
+                potential_fcn=self.get_potential,
+                r_potential=self._reward_config["r_potential"],
+            )
+
+        if reward_mode in {"task", "combined"}:
+            if task_reward_name == "turning_on_radio":
+                rewards["task_specific"] = TurningOnRadioReward(**task_reward_kwargs)
+            elif task_reward_name == "hanging_pictures":
+                rewards["task_specific"] = HangingPicturesReward(**task_reward_kwargs)
+            else:
+                log.warning(
+                    "No task-specific reward implemented for activity '%s'; falling back to configured rewards.",
+                    task_reward_name,
+                )
+
+        if len(rewards) == 0:
+            log.warning("Reward set was empty; falling back to PotentialReward.")
+            rewards["potential"] = PotentialReward(
+                potential_fcn=self.get_potential,
+                r_potential=self._reward_config["r_potential"],
+            )
 
         return rewards
 
@@ -683,4 +707,7 @@ class BehaviorTask(BaseTask):
     def default_reward_config(cls):
         return {
             "r_potential": 1.0,
+            "reward_mode": "potential",
+            "task_specific_reward_name": None,
+            "task_specific_reward_kwargs": {},
         }

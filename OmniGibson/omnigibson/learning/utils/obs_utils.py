@@ -38,6 +38,98 @@ MAX_DEPTH = 10.0
 DEPTH_SHIFT = 3.5
 
 
+def _wrap_banner_text_lines(lines: List[str], font, font_scale: float, thickness: int, max_width: int) -> List[str]:
+    """
+    Wrap text lines to fit within the banner width while keeping a fixed font size.
+    """
+    wrapped_lines = []
+    for line in lines:
+        text = str(line)
+        if not text:
+            wrapped_lines.append("")
+            continue
+
+        words = text.split(" ")
+        current_line = words[0]
+        for word in words[1:]:
+            candidate = f"{current_line} {word}"
+            candidate_width = cv2.getTextSize(candidate, font, font_scale, thickness)[0][0]
+            if candidate_width <= max_width:
+                current_line = candidate
+            else:
+                wrapped_lines.append(current_line)
+                current_line = word
+
+        # Handle very long tokens without spaces.
+        while cv2.getTextSize(current_line, font, font_scale, thickness)[0][0] > max_width and len(current_line) > 1:
+            split_idx = len(current_line)
+            while split_idx > 1:
+                candidate = current_line[:split_idx]
+                candidate_width = cv2.getTextSize(candidate, font, font_scale, thickness)[0][0]
+                if candidate_width <= max_width:
+                    break
+                split_idx -= 1
+            wrapped_lines.append(current_line[:split_idx])
+            current_line = current_line[split_idx:]
+
+        wrapped_lines.append(current_line)
+
+    return wrapped_lines
+
+
+def overlay_info_banner(frame: np.ndarray, info_lines: List[str], banner_height: Optional[int] = None) -> np.ndarray:
+    """
+    Add a white banner above the frame and render black text onto it.
+
+    Args:
+        frame (np.ndarray): RGB frame with shape (H, W, 3)
+        info_lines (List[str]): Text lines to render in the banner.
+        banner_height (Optional[int]): Explicit banner height. If omitted, infer from line count.
+
+    Returns:
+        np.ndarray: Frame with a top banner appended.
+    """
+    if frame is None or len(info_lines) == 0:
+        return frame
+
+    frame = np.ascontiguousarray(frame)
+    if frame.ndim == 2:
+        frame = np.repeat(frame[..., None], 3, axis=2)
+    channels = frame.shape[2]
+    if channels > 3:
+        frame = frame[..., :3]
+        channels = 3
+    height, width = frame.shape[:2]
+    font = cv2.FONT_HERSHEY_SIMPLEX
+    font_scale = 0.5
+    thickness = 1
+    margin_x = 12
+    margin_y = 12
+    line_gap = 8
+    line_height = 18
+    max_text_width = max(width - (2 * margin_x), 1)
+    wrapped_lines = _wrap_banner_text_lines(info_lines, font, font_scale, thickness, max_text_width)
+    inferred_height = margin_y * 2 + len(wrapped_lines) * line_height + max(0, len(wrapped_lines) - 1) * line_gap
+    banner_height = max(banner_height or 0, inferred_height)
+    banner = np.full((banner_height, width, channels), 255, dtype=np.uint8)
+
+    y = margin_y + line_height - 4
+    for line in wrapped_lines:
+        cv2.putText(
+            banner,
+            str(line),
+            (margin_x, y),
+            font,
+            font_scale,
+            (0, 0, 0),
+            thickness,
+            cv2.LINE_AA,
+        )
+        y += line_height + line_gap
+
+    return np.vstack([banner, frame])
+
+
 def quantize_depth(
     depth: np.ndarray, min_depth: float = MIN_DEPTH, max_depth: float = MAX_DEPTH, shift: float = DEPTH_SHIFT
 ) -> np.ndarray:

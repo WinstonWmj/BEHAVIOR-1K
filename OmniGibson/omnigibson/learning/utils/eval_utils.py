@@ -280,6 +280,9 @@ def generate_basic_environment_config(task_name, task_cfg):
             },
             "reward_config": {
                 "r_potential": 1.0,
+                "reward_mode": "potential",
+                "task_specific_reward_name": None,
+                "task_specific_reward_kwargs": {},
             },
             "include_obs": False,
         },

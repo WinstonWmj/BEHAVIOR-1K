@@ -34,7 +34,13 @@ from omnigibson.learning.utils.eval_utils import (
 )
 from omnigibson.learning.utils.obs_utils import (
     create_video_writer,
+    overlay_info_banner,
     write_video,
+)
+from omnigibson.learning.utils.reward_logging_utils import (
+    delay_termination_until_stage_completion,
+    format_video_info_lines,
+    summarize_stage_progress,
 )
 from omnigibson.learning.skill_evaluators import create_skill_evaluator
 from omnigibson.macros import gm, create_module_macros
@@ -93,6 +99,8 @@ class Evaluator:
         # manually reset environment episode number
         self.env._current_episode = 0
         self._video_writer = None
+        self.last_step_info = {}
+        self.last_step_reward = 0.0
 
     def load_env(self, env_wrapper: DictConfig) -> EnvironmentWrapper:
         """
@@ -209,7 +217,16 @@ class Evaluator:
         self.robot_action = self.policy.forward(obs=self.obs)
 
         obs, reward, terminated, truncated, info = self.env.step(self.robot_action, n_render_iterations=1)
+        if terminated and not truncated:
+            delayed_info = delay_termination_until_stage_completion(info)
+            delayed_done = delayed_info.get("done", {})
+            if delayed_done.get("waiting_for_stage_completion", False) or delayed_done.get(
+                "keep_running_after_success", False
+            ):
+                info = delayed_info
+                terminated = False
         self.last_step_reward = reward  # reward 已经是基于谓词进度的 delta 奖励（potential-based shaping）新满足一个谓词 → reward > 0，谓词退化 → reward < 0
+        self.last_step_info = info
         # process obs
         self.obs = self._preprocess_obs(obs)
 
@@ -406,8 +423,19 @@ class Evaluator:
             self.obs[ROBOT_CAMERA_NAMES["R1Pro"]["head"] + "::rgb"].numpy(),
             (448, 448),
         )
+        frame = np.hstack([np.vstack([left_wrist_rgb, right_wrist_rgb]), head_rgb])
+        if frame.ndim == 3 and frame.shape[2] > 3:
+            frame = frame[..., :3]
+        frame = overlay_info_banner(
+            frame,
+            format_video_info_lines(
+                info=self.last_step_info,
+                step=self.env._current_step,
+                reward=self.last_step_reward,
+            ),
+        )
         write_video(
-            np.expand_dims(np.hstack([np.vstack([left_wrist_rgb, right_wrist_rgb]), head_rgb]), 0),
+            np.expand_dims(frame, 0),
             video_writer=self.video_writer,
             batch_size=1,
             mode="rgb",
@@ -418,6 +446,8 @@ class Evaluator:
         Reset the environment, policy, and compute metrics.
         """
         self.obs = self._preprocess_obs(self.env.reset()[0])
+        self.last_step_info = {}
+        self.last_step_reward = 0.0
         # run metric start callbacks
         for metric in self.metrics:
             metric.start_callback(self.env)
@@ -720,17 +750,8 @@ def _run_instance_eval(config, logger):
                         logger.info(f"Current step: {evaluator.env._current_step}")
                         logger.info(f"Current reward: {reward}")
                         logger.info(f"Current info: {info}")
-                        goal_status = info["done"]["goal_status"]
-                        satisfied_str = ", ".join(
-                            str(evaluator.env.task.activity_natural_language_goal_conditions[i])
-                            for i in goal_status["satisfied"]
-                        ) or "None"
-                        unsatisfied_str = ", ".join(
-                            str(evaluator.env.task.activity_natural_language_goal_conditions[i])
-                            for i in goal_status["unsatisfied"]
-                        ) or "None"
-                        logger.info(f"Goal satisfied: [{satisfied_str}]")
-                        logger.info(f"Goal unsatisfied: [{unsatisfied_str}]")
+                        for line in summarize_stage_progress(info):
+                            logger.info(line)
 
                 if config.write_video and terminated:
                     for _ in range(3):
