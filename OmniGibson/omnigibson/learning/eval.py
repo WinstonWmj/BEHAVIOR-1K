@@ -24,14 +24,20 @@ from omnigibson.learning.utils.config_utils import register_omegaconf_resolvers
 from omnigibson.learning.utils.eval_utils import (
     ROBOT_CAMERA_NAMES,
     PROPRIOCEPTION_INDICES,
+    delay_termination_until_stage_completion,
     generate_basic_environment_config,
     flatten_obs_dict,
+    get_demo_annotation_path,
+    resolve_demo_annotation_path,
+    summarize_stage_progress,
+    sync_task_reward_annotation_for_episode,
     TASK_NAMES_TO_INDICES,
 )
 from omnigibson.learning.utils.obs_utils import (
     create_video_writer,
     write_video,
 )
+from omnigibson.learning.skill_evaluators import create_skill_evaluator
 from omnigibson.macros import gm, create_module_macros
 from omnigibson.metrics import MetricBase, AgentMetric, TaskMetric
 from omnigibson.robots import BaseRobot
@@ -115,6 +121,40 @@ class Evaluator:
         robot_type = self.cfg.robot.type
         assert robot_type == "R1Pro", f"Got invalid robot type: {robot_type}, only R1Pro is supported."
         cfg = generate_basic_environment_config(task_name=task_name, task_cfg=task_cfg)
+        cfg["task"]["reward_config"]["reward_mode"] = self.cfg.instance_reward_mode
+        if self.cfg.instance_reward_mode in {"task", "combined"}:
+            task_reward_kwargs = OmegaConf.to_container(self.cfg.task_specific_reward_kwargs, resolve=True) or {}
+            demo_expert_data_dir = self.cfg.demo_expert_data_dir
+            demo_expert_episode_index = self.cfg.demo_expert_episode_index
+            if demo_expert_data_dir is not None and demo_expert_episode_index is not None:
+                annotation_path = resolve_demo_annotation_path(
+                    demo_data_dir=demo_expert_data_dir,
+                    task_index=task_idx,
+                    episode_index=demo_expert_episode_index,
+                )
+                if annotation_path is not None:
+                    task_reward_kwargs["annotation_path"] = annotation_path
+                    logger.info("Using task reward annotation: %s", annotation_path)
+                else:
+                    annotation_path = get_demo_annotation_path(
+                        demo_data_dir=demo_expert_data_dir,
+                        task_index=task_idx,
+                        episode_index=demo_expert_episode_index,
+                    )
+                    logger.warning("Task reward annotation not found: %s", annotation_path)
+
+            cfg["task"]["reward_config"]["task_specific_reward_name"] = task_name
+            cfg["task"]["reward_config"]["task_specific_reward_kwargs"] = task_reward_kwargs
+        logger.info(
+            "Using reward mode '%s' for task '%s'",
+            cfg["task"]["reward_config"]["reward_mode"],
+            task_name,
+        )
+        if self.cfg.partial_scene_load:
+            relevant_rooms = get_task_relevant_room_types(activity_name=task_name)
+            relevant_rooms = augment_rooms(relevant_rooms, task_cfg["scene_model"], task_name)
+            cfg["scene"]["load_room_types"] = relevant_rooms
+
         cfg["robots"] = [
             generate_robot_config(
                 task_name=task_name,
@@ -307,6 +347,13 @@ class Evaluator:
             self.obs[ROBOT_CAMERA_NAMES["R1Pro"]["head"] + "::rgb"].numpy(),
             (448, 448),
         )
+        frame = np.hstack([np.vstack([left_wrist_rgb, right_wrist_rgb]), head_rgb])
+        frame = overlay_info_banner(
+            frame,
+            info=self.last_step_info,
+            step=self.env._current_step,
+            reward=self.last_step_reward,
+        )
         write_video(
             np.expand_dims(np.hstack([np.vstack([left_wrist_rgb, right_wrist_rgb]), head_rgb]), 0),
             video_writer=self.video_writer,
@@ -363,6 +410,178 @@ if __name__ == "__main__":
     if config.write_video:
         video_path = Path(config.log_path).expanduser() / "videos"
         video_path.mkdir(parents=True, exist_ok=True)
+    metrics_path = Path(config.log_path).expanduser() / "metrics"
+    metrics_path.mkdir(parents=True, exist_ok=True)
+
+    summary_results = []
+
+    with Evaluator(config) as evaluator:
+        logger.info("Starting subtask evaluation...")
+
+        for episode_index in episodes_to_run:
+            instance_id = int((episode_index // 10) % 1e3)
+            ep_dir = orchestrator_dir / f"episode_{episode_index:08d}"
+
+            subtask_files = sorted(
+                ep_dir.glob("subtask_*_annotated.json"),
+                key=lambda p: int(p.stem.split("_")[1]),
+            )
+
+            for subtask_file in subtask_files:
+                with open(subtask_file) as f:
+                    subtask_info = json.load(f)
+
+                if skill_filter is not None and subtask_info["skill_description"] not in skill_filter:
+                    continue
+
+                subtask_idx = int(subtask_file.stem.split("_")[1])
+                start_frame = subtask_info["start_frame"]
+                end_frame = subtask_info["end_frame"]
+                subtask_desc = subtask_info["cot_subtask_description"]
+                skill_desc = subtask_info["skill_description"]
+
+                logger.info("")
+                logger.info("=" * 60)
+                logger.info(
+                    f"Episode {episode_index} | Subtask {subtask_idx} | {subtask_desc}"
+                )
+                logger.info(
+                    f"Skill: {skill_desc} | Frames: {start_frame}-{end_frame} | Instance: {instance_id}"
+                )
+                logger.info("=" * 60)
+
+                evaluator.reset()
+                evaluator.load_task_instance(instance_id)
+                sync_task_reward_annotation_for_episode(
+                    task=evaluator.env.task,
+                    demo_data_dir=demo_data_dir,
+                    task_index=task_idx,
+                    episode_index=episode_index,
+                    logger=logger,
+                )
+                evaluator.reset()
+                evaluator.load_subtask_init_state(
+                    demo_data_dir, task_idx, episode_index, start_frame,
+                )
+
+                # --- Create skill evaluator ---
+                skill_eval_kwargs = {}
+                if eval_mode == "simple":
+                    skill_eval_kwargs["distance_threshold"] = config.subtask_success_distance
+                elif eval_mode == "advanced":
+                    skill_eval_kwargs["height_threshold"] = config.subtask_success_height
+                skill_eval = create_skill_evaluator(skill_desc, mode=eval_mode, **skill_eval_kwargs)
+                if skill_eval is not None:
+                    skill_eval.reset(evaluator, subtask_info)
+                else:
+                    logger.warning(f"No evaluator for skill '{skill_desc}', mode '{eval_mode}'")
+
+                subtask_duration = end_frame - start_frame
+                subtask_max_steps = int(subtask_duration * config.subtask_max_steps_multiplier)
+                if config.max_steps is not None:
+                    subtask_max_steps = config.max_steps
+                logger.info(f"Max steps: {subtask_max_steps} (duration={subtask_duration})")
+
+                done = False
+                step_count = 0
+                if config.write_video:
+                    video_name = (
+                        str(video_path)
+                        + f"/{config.task.name}_ep{episode_index}_st{subtask_idx}"
+                        + f"_{skill_desc.replace(' ', '_')}.mp4"
+                    )
+                    evaluator.video_writer = create_video_writer(
+                        fpath=video_name,
+                        resolution=(448, 672),
+                    )
+
+                for metric in evaluator.metrics:
+                    metric.start_callback(evaluator.env)
+
+                while not done:
+                    terminated, truncated, reward, info = evaluator.step()
+                    step_count += 1
+
+                    if skill_eval is not None:
+                        se_metrics = skill_eval.step(evaluator)
+                    else:
+                        se_metrics = {}
+
+                    skill_success_now = skill_eval.is_success if skill_eval else False
+                    if terminated or truncated or step_count >= subtask_max_steps or skill_success_now:
+                        done = True
+                    if config.write_video:
+                        evaluator._write_video()
+                    if step_count % 100 == 0:
+                        logger.info(
+                            f"  step={step_count}, bddl_reward={reward:.4f}, "
+                            f"skill_eval={se_metrics}"
+                        )
+
+                if config.write_video and terminated:
+                    for _ in range(3):
+                        obs, _, _, _, _ = evaluator.env.step(
+                            evaluator.robot_action, n_render_iterations=3
+                        )
+                        evaluator.obs = evaluator._preprocess_obs(obs)
+                        evaluator._write_video()
+
+                for metric in evaluator.metrics:
+                    metric.end_callback(evaluator.env)
+
+                # --- Log skill evaluator results ---
+                skill_success = skill_eval.is_success if skill_eval else False
+                skill_summary = skill_eval.summary if skill_eval else {}
+
+                logger.info(
+                    f"Finished: steps={step_count}, terminated={terminated}, truncated={truncated}"
+                )
+                logger.info(f"Skill evaluator result: {skill_summary}")
+
+                subtask_result = {
+                    "episode_index": episode_index,
+                    "subtask_idx": subtask_idx,
+                    "skill_description": skill_desc,
+                    "cot_subtask_description": subtask_desc,
+                    "manipulating_object_id": subtask_info.get("manipulating_object_id", []),
+                    "steps": step_count,
+                    "subtask_success": skill_success,
+                    **skill_summary,
+                }
+                summary_results.append(subtask_result)
+
+                metrics_file = metrics_path / f"{config.task.name}_ep{episode_index}_st{subtask_idx}.json"
+                with open(metrics_file, "w") as f:
+                    json.dump(subtask_result, f, indent=2)
+
+                if config.write_video:
+                    evaluator.video_writer = None
+                    logger.info(f"Saved video: {video_name}")
+
+    # --- Aggregated summary ---
+    n_total = len(summary_results)
+    n_success = sum(1 for r in summary_results if r["subtask_success"])
+    logger.info("")
+    logger.info("=" * 60)
+    logger.info(f"SUBTASK EVAL SUMMARY: {n_success}/{n_total} succeeded ({100*n_success/max(n_total,1):.1f}%)")
+    if summary_results:
+        displacements = [r.get("max_displacement", 0) for r in summary_results]
+        logger.info(f"Avg max displacement: {np.mean(displacements):.4f}m")
+    logger.info("=" * 60)
+
+    summary_path = metrics_path / f"{config.task.name}_subtask_summary.json"
+    with open(summary_path, "w") as f:
+        json.dump({"success_rate": n_success / max(n_total, 1), "results": summary_results}, f, indent=2)
+    logger.info(f"Summary saved: {summary_path}")
+
+
+def _run_instance_eval(config, logger):
+    """Original instance-level evaluation (unchanged logic)."""
+    assert not (
+        config.eval_on_train_instances and config.test_hidden
+    ), "Cannot eval on train instances and test hidden instances simultaneously."
+    if config.test_hidden:
+        logger.info("You are evaluating on hidden test instances! This is for internal use only.")
     # get run instances
     instances_to_run = (
         config.eval_instance_ids if config.eval_instance_ids is not None else set(range(m.NUM_EVAL_INSTANCES))
