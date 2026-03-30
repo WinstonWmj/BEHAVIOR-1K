@@ -1,3 +1,7 @@
+from copy import deepcopy
+import logging
+import os
+from typing import Dict, List
 import numpy as np
 import torch as th
 from collections import OrderedDict
@@ -240,6 +244,193 @@ TASK_NAMES_TO_INDICES = {
     "make_pizza": 49,
 }
 TASK_INDICES_TO_NAMES = {v: k for k, v in TASK_NAMES_TO_INDICES.items()}
+
+
+def get_demo_annotation_path(demo_data_dir, task_index, episode_index):
+    return os.path.join(
+        demo_data_dir,
+        "annotations",
+        f"task-{task_index:04d}",
+        f"episode_{int(episode_index):08d}.json",
+    )
+
+
+def resolve_demo_annotation_path(demo_data_dir, task_index, episode_index):
+    annotation_path = (
+        get_demo_annotation_path(
+            demo_data_dir=demo_data_dir,
+            task_index=task_index,
+            episode_index=episode_index,
+        )
+        if demo_data_dir is not None
+        else None
+    )
+    return annotation_path if annotation_path is not None and os.path.exists(annotation_path) else None
+
+
+def sync_task_reward_annotation_for_episode(task, demo_data_dir, task_index, episode_index, logger=None):
+    annotation_path = resolve_demo_annotation_path(
+        demo_data_dir=demo_data_dir,
+        task_index=task_index,
+        episode_index=episode_index,
+    )
+    reward_function = getattr(task, "_reward_functions", {}).get("task_specific", None)
+    if reward_function is None or not hasattr(reward_function, "annotation_path"):
+        return None
+
+    task_reward_kwargs = task._reward_config.get("task_specific_reward_kwargs", {})
+    reward_function.annotation_path = annotation_path
+    if annotation_path is None:
+        task_reward_kwargs.pop("annotation_path", None)
+    else:
+        task_reward_kwargs["annotation_path"] = annotation_path
+
+    active_logger = logger or logging.getLogger(__name__)
+    if annotation_path is not None:
+        active_logger.info("Using task reward annotation for current episode: %s", annotation_path)
+    else:
+        missing_path = get_demo_annotation_path(
+            demo_data_dir=demo_data_dir,
+            task_index=task_index,
+            episode_index=episode_index,
+        )
+        active_logger.warning("Task reward annotation not found for current episode: %s", missing_path)
+    return annotation_path
+
+
+def extract_sequential_reward_info(info: Dict) -> Dict:
+    if not isinstance(info, dict):
+        return {}
+
+    if "stage_infos" in info or "current_stage_name" in info:
+        return info
+
+    reward_info = info.get("reward")
+    if isinstance(reward_info, dict):
+        task_specific = reward_info.get("task_specific")
+        if isinstance(task_specific, dict):
+            return task_specific
+
+        for reward_payload in reward_info.values():
+            if isinstance(reward_payload, dict) and (
+                "stage_infos" in reward_payload or "current_stage_name" in reward_payload
+            ):
+                return reward_payload
+
+    return {}
+
+
+def delay_termination_until_stage_completion(info: Dict) -> Dict:
+    info = deepcopy(info) if isinstance(info, dict) else {}
+    sequential_info = extract_sequential_reward_info(info)
+    done_info = info.get("done")
+    if not isinstance(done_info, dict) or not sequential_info:
+        return info
+
+    if done_info.get("success"):
+        if not sequential_info.get("all_stages_completed", False):
+            done_info["success"] = False
+            done_info["waiting_for_stage_completion"] = True
+        else:
+            done_info["keep_running_after_success"] = True
+
+    return info
+
+
+def _format_scalar(value) -> str:
+    if isinstance(value, bool):
+        return str(value)
+    if isinstance(value, float):
+        return f"{value:.3f}"
+    return str(value)
+
+
+_VIDEO_ACTIVE_METRIC_KEYS = {
+    "move_to_radio": ["eef_to_obj_distance", "success_threshold"],
+    "pickup_from_support": ["eef_to_obj_distance"],
+    "press_radio": ["eef_to_toggle_distance", "toggle_steps"],
+    "place_on_support": ["eef_to_obj_distance"],
+}
+
+
+def format_stage_status_chain(info: Dict):
+    info = extract_sequential_reward_info(info)
+    stage_infos = info.get("stage_infos")
+    current_stage_name = info.get("current_stage_name")
+    all_stages_completed = bool(info.get("all_stages_completed", False))
+    if not isinstance(stage_infos, dict) or len(stage_infos) == 0:
+        return None
+
+    parts = []
+    for stage_name, stage_info in stage_infos.items():
+        if all_stages_completed or bool(stage_info.get("completed", False)):
+            status = "done"
+        elif stage_name == current_stage_name:
+            status = "doing"
+        else:
+            status = "todo"
+        parts.append(f"{stage_name} ({status})")
+
+    return " > ".join(parts)
+
+
+def _format_stage_progress_lines(info: Dict, *, concise: bool) -> List[str]:
+    reward_info = extract_sequential_reward_info(info or {})
+    lines = []
+    stage_chain = format_stage_status_chain(reward_info)
+    if stage_chain is not None:
+        lines.append(f"stages: {stage_chain}")
+
+    stage_total_rewards = reward_info.get("stage_cumulative_rewards")
+    stage_rewards = reward_info.get("stage_rewards")
+    if isinstance(stage_total_rewards, dict) and len(stage_total_rewards) > 0:
+        lines.append(
+            "stage_total_rewards: "
+            + ", ".join(
+                f"{stage_name}={stage_reward:.3f}" for stage_name, stage_reward in stage_total_rewards.items()
+            )
+        )
+    elif isinstance(stage_rewards, dict) and len(stage_rewards) > 0:
+        lines.append(
+            "stage_rewards: "
+            + ", ".join(f"{stage_name}={stage_reward:.3f}" for stage_name, stage_reward in stage_rewards.items())
+        )
+
+    current_stage_name = reward_info.get("current_stage_name")
+    stage_infos = reward_info.get("stage_infos")
+    active_stage_info = stage_infos.get(current_stage_name, {}) if isinstance(stage_infos, dict) else {}
+    if isinstance(current_stage_name, str) and isinstance(active_stage_info, dict):
+        stage_reward = active_stage_info.get("reward")
+        if not isinstance(stage_reward, (int, float)) or isinstance(stage_reward, bool):
+            stage_reward = stage_rewards.get(current_stage_name) if isinstance(stage_rewards, dict) else None
+        if isinstance(stage_reward, (int, float)) and not isinstance(stage_reward, bool):
+            lines.append(f"reward: {_format_scalar(stage_reward)}")
+
+        completed = active_stage_info.get("completed")
+        if isinstance(completed, bool):
+            lines.append(f"completed: {completed}")
+
+        metric_keys = set(_VIDEO_ACTIVE_METRIC_KEYS.get(current_stage_name, [])) if concise else None
+        metrics = [
+            f"{key}={_format_scalar(value)}"
+            for key, value in active_stage_info.items()
+            if key not in {"reward", "completed"}
+            and isinstance(value, (int, float))
+            and not isinstance(value, bool)
+            and (metric_keys is None or key in metric_keys)
+        ]
+        if metrics:
+            lines.append("metrics: " + ", ".join(metrics))
+
+    return lines
+
+
+def format_video_info_lines(info: Dict, step: int, reward: float) -> List[str]:
+    return [f"step={step} reward={reward:.4f}", *_format_stage_progress_lines(info, concise=True)]
+
+
+def summarize_stage_progress(info: Dict) -> List[str]:
+    return _format_stage_progress_lines(info, concise=False)
 
 
 def generate_basic_environment_config(task_name, task_cfg):

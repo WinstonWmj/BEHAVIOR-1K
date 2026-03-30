@@ -28,19 +28,19 @@ from omnigibson.learning.utils.config_utils import register_omegaconf_resolvers
 from omnigibson.learning.utils.eval_utils import (
     ROBOT_CAMERA_NAMES,
     PROPRIOCEPTION_INDICES,
+    delay_termination_until_stage_completion,
     generate_basic_environment_config,
     flatten_obs_dict,
+    get_demo_annotation_path,
+    resolve_demo_annotation_path,
+    summarize_stage_progress,
+    sync_task_reward_annotation_for_episode,
     TASK_NAMES_TO_INDICES,
 )
 from omnigibson.learning.utils.obs_utils import (
     create_video_writer,
     overlay_info_banner,
     write_video,
-)
-from omnigibson.learning.utils.reward_logging_utils import (
-    delay_termination_until_stage_completion,
-    format_video_info_lines,
-    summarize_stage_progress,
 )
 from omnigibson.learning.skill_evaluators import create_skill_evaluator
 from omnigibson.macros import gm, create_module_macros
@@ -143,16 +143,20 @@ class Evaluator:
             demo_expert_data_dir = self.cfg.demo_expert_data_dir
             demo_expert_episode_index = self.cfg.demo_expert_episode_index
             if demo_expert_data_dir is not None and demo_expert_episode_index is not None:
-                annotation_path = os.path.join(
-                    demo_expert_data_dir,
-                    "annotations",
-                    f"task-{task_idx:04d}",
-                    f"episode_{int(demo_expert_episode_index):08d}.json",
+                annotation_path = resolve_demo_annotation_path(
+                    demo_data_dir=demo_expert_data_dir,
+                    task_index=task_idx,
+                    episode_index=demo_expert_episode_index,
                 )
-                if os.path.exists(annotation_path):
+                if annotation_path is not None:
                     task_reward_kwargs["annotation_path"] = annotation_path
                     logger.info("Using task reward annotation: %s", annotation_path)
                 else:
+                    annotation_path = get_demo_annotation_path(
+                        demo_data_dir=demo_expert_data_dir,
+                        task_index=task_idx,
+                        episode_index=demo_expert_episode_index,
+                    )
                     logger.warning("Task reward annotation not found: %s", annotation_path)
 
             cfg["task"]["reward_config"]["task_specific_reward_name"] = task_name
@@ -449,15 +453,11 @@ class Evaluator:
             (448, 448),
         )
         frame = np.hstack([np.vstack([left_wrist_rgb, right_wrist_rgb]), head_rgb])
-        if frame.ndim == 3 and frame.shape[2] > 3:
-            frame = frame[..., :3]
         frame = overlay_info_banner(
             frame,
-            format_video_info_lines(
-                info=self.last_step_info,
-                step=self.env._current_step,
-                reward=self.last_step_reward,
-            ),
+            info=self.last_step_info,
+            step=self.env._current_step,
+            reward=self.last_step_reward,
         )
         write_video(
             np.expand_dims(frame, 0),
@@ -575,6 +575,13 @@ def _run_subtask_eval(config, logger):
 
                 evaluator.reset()
                 evaluator.load_task_instance(instance_id)
+                sync_task_reward_annotation_for_episode(
+                    task=evaluator.env.task,
+                    demo_data_dir=demo_data_dir,
+                    task_index=task_idx,
+                    episode_index=episode_index,
+                    logger=logger,
+                )
                 evaluator.reset()
                 evaluator.load_subtask_init_state(
                     demo_data_dir, task_idx, episode_index, start_frame,

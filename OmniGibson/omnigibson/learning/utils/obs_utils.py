@@ -14,6 +14,7 @@ from tqdm import trange
 from typing import Dict, Optional, Tuple, Generator, List
 from omnigibson.learning.utils.eval_utils import (
     CAMERA_INTRINSICS,
+    format_video_info_lines,
     HEAD_RESOLUTION,
     WRIST_RESOLUTION,
     ROBOT_CAMERA_NAMES,
@@ -77,18 +78,31 @@ def _wrap_banner_text_lines(lines: List[str], font, font_scale: float, thickness
     return wrapped_lines
 
 
-def overlay_info_banner(frame: np.ndarray, info_lines: List[str], banner_height: Optional[int] = None) -> np.ndarray:
+def overlay_info_banner(
+    frame: np.ndarray,
+    info_lines: Optional[List[str]] = None,
+    *,
+    info: Optional[Dict] = None,
+    step: Optional[int] = None,
+    reward: Optional[float] = None,
+    banner_height: Optional[int] = None,
+) -> np.ndarray:
     """
     Add a white banner above the frame and render black text onto it.
 
     Args:
         frame (np.ndarray): RGB frame with shape (H, W, 3)
-        info_lines (List[str]): Text lines to render in the banner.
+        info_lines (Optional[List[str]]): Explicit text lines to render in the banner.
+        info (Optional[Dict]): Step info used to build banner lines when info_lines is omitted.
+        step (Optional[int]): Environment step used to build banner lines when info_lines is omitted.
+        reward (Optional[float]): Reward used to build banner lines when info_lines is omitted.
         banner_height (Optional[int]): Explicit banner height. If omitted, infer from line count.
 
     Returns:
         np.ndarray: Frame with a top banner appended.
     """
+    if info_lines is None:
+        info_lines = format_video_info_lines(info=info, step=step or 0, reward=reward or 0.0)
     if frame is None or len(info_lines) == 0:
         return frame
 
