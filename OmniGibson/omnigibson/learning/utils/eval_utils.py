@@ -291,27 +291,55 @@ def load_subtask_annotation(demo_data_dir, task_index, episode_index, subtask_in
         return annotation_path, json.load(f)
 
 
-def resolve_subtask_frame_range(demo_data_dir, task_index, episode_index, subtask_index):
+def resolve_subtask_index_range(subtask_index=None, subtask_end_index=None):
+    if subtask_index is None:
+        assert subtask_end_index is None, "subtask_end_index requires subtask_index to also be set."
+        return None
+
+    start_idx = int(subtask_index)
+    end_idx = start_idx if subtask_end_index is None else int(subtask_end_index)
+    assert end_idx >= start_idx, (
+        f"Expected subtask_end_index >= subtask_index, got start={start_idx}, end={end_idx}"
+    )
+    return start_idx, end_idx
+
+
+def resolve_subtask_frame_range(demo_data_dir, task_index, episode_index, subtask_index, subtask_end_index=None):
     """
     Resolve the inclusive-exclusive frame range [start_frame, end_frame) for a
-    specific annotated subtask.
+    contiguous subtask selection. When only subtask_index is provided, this
+    resolves a single annotated subtask.
     """
+    resolved_range = resolve_subtask_index_range(
+        subtask_index=subtask_index,
+        subtask_end_index=subtask_end_index,
+    )
+    assert resolved_range is not None, "subtask_index must be set to resolve a subtask frame range."
+    start_subtask_index, end_subtask_index = resolved_range
+
     annotation_path, subtask_info = load_subtask_annotation(
         demo_data_dir=demo_data_dir,
         task_index=task_index,
         episode_index=episode_index,
-        subtask_index=subtask_index,
+        subtask_index=start_subtask_index,
+    )
+    end_annotation_path, end_subtask_info = load_subtask_annotation(
+        demo_data_dir=demo_data_dir,
+        task_index=task_index,
+        episode_index=episode_index,
+        subtask_index=end_subtask_index,
     )
     start_frame = subtask_info.get("start_frame")
-    end_frame = subtask_info.get("end_frame")
+    end_frame = end_subtask_info.get("end_frame")
     assert isinstance(start_frame, int), (
         f"Subtask annotation {annotation_path} is missing an integer start_frame: {start_frame}"
     )
     assert isinstance(end_frame, int), (
-        f"Subtask annotation {annotation_path} is missing an integer end_frame: {end_frame}"
+        f"Subtask annotation {end_annotation_path} is missing an integer end_frame: {end_frame}"
     )
     assert start_frame < end_frame, (
-        f"Subtask annotation {annotation_path} has invalid frame range: "
+        f"Subtask selection task={task_index}, episode={episode_index}, subtasks=[{start_subtask_index}, {end_subtask_index}] "
+        f"has invalid frame range: "
         f"start_frame={start_frame}, end_frame={end_frame}"
     )
     return start_frame, end_frame

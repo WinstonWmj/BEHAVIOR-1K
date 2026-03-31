@@ -29,9 +29,9 @@ from omnigibson.learning.utils.eval_utils import (
     generate_basic_environment_config,
     flatten_obs_dict,
     get_demo_annotation_path,
-    get_subtask_annotation_path,
     resolve_demo_annotation_path,
     resolve_subtask_frame_range,
+    resolve_subtask_index_range,
     summarize_stage_progress,
     sync_task_reward_annotation_for_episode,
     TASK_NAMES_TO_INDICES,
@@ -231,11 +231,17 @@ class Evaluator:
         self.robot_action = self.policy.forward(obs=self.obs)
 
         obs, reward, terminated, truncated, info = self.env.step(self.robot_action, n_render_iterations=1)
-        if terminated and not truncated:
+        if terminated and not truncated and (
+            self.cfg.waiting_for_stage_completion or self.cfg.keep_running_after_success
+        ):
             delayed_info = delay_termination_until_stage_completion(info)
             delayed_done = delayed_info.get("done", {})
-            if delayed_done.get("waiting_for_stage_completion", False) or delayed_done.get(
-                "keep_running_after_success", False
+            if (
+                self.cfg.waiting_for_stage_completion
+                and delayed_done.get("waiting_for_stage_completion", False)
+            ) or (
+                self.cfg.keep_running_after_success
+                and delayed_done.get("keep_running_after_success", False)
             ):
                 info = delayed_info
                 terminated = False
@@ -460,6 +466,10 @@ def _prime_task_reward_for_subtask(evaluator: Evaluator, subtask_idx: int) -> No
         task_reward.set_active_stage_index(subtask_idx)
 
 
+def _format_subtask_range_label(start_idx: int, end_idx: int) -> str:
+    return f"{start_idx}" if start_idx == end_idx else f"{start_idx}->{end_idx}"
+
+
 def _run_subtask_eval(config, logger):
     """Subtask-level evaluation: iterate episodes × subtasks from demo data."""
     task_idx = TASK_NAMES_TO_INDICES[config.task.name]
@@ -493,11 +503,14 @@ def _run_subtask_eval(config, logger):
     skill_filter = None
     if config.subtask_skill_filter is not None:
         skill_filter = set(config.subtask_skill_filter)
-    subtask_index_filter = None if config.subtask_index is None else int(config.subtask_index)
+    selected_subtask_range = resolve_subtask_index_range(
+        subtask_index=config.subtask_index,
+        subtask_end_index=getattr(config, "subtask_end_index", None),
+    )
 
     logger.info(
         f"Subtask eval mode: {len(episodes_to_run)} episodes, "
-        f"skill_filter={skill_filter}, subtask_index={subtask_index_filter}"
+        f"skill_filter={skill_filter}, subtask_range={selected_subtask_range}"
     )
     logger.info("Subtask success source: task-specific reward stage completion")
 
@@ -520,48 +533,59 @@ def _run_subtask_eval(config, logger):
                 ep_dir.glob("subtask_*_annotated.json"),
                 key=lambda p: int(p.stem.split("_")[1]),
             )
-            if subtask_index_filter is not None:
-                subtask_files = [Path(
-                    get_subtask_annotation_path(
-                        demo_data_dir=demo_data_dir,
-                        task_index=task_idx,
-                        episode_index=episode_index,
-                        subtask_index=subtask_index_filter,
-                    )
-                )]
-                assert subtask_files[0].parent == ep_dir, (
-                    f"Resolved subtask annotation path {subtask_files[0]} does not match episode directory {ep_dir}"
+            subtask_paths = {int(path.stem.split("_")[1]): path for path in subtask_files}
+            if selected_subtask_range is None:
+                subtask_eval_ranges = [(idx, idx) for idx in sorted(subtask_paths)]
+            else:
+                range_start_idx, range_end_idx = selected_subtask_range
+                missing_subtasks = [idx for idx in range(range_start_idx, range_end_idx + 1) if idx not in subtask_paths]
+                assert not missing_subtasks, (
+                    f"Episode {episode_index} is missing requested subtasks {missing_subtasks} under {ep_dir}"
+                )
+                subtask_eval_ranges = [selected_subtask_range]
+
+            for subtask_start_idx, subtask_end_idx in subtask_eval_ranges:
+                selected_subtask_infos = []
+                for subtask_idx in range(subtask_start_idx, subtask_end_idx + 1):
+                    subtask_file = subtask_paths[subtask_idx]
+                    with open(subtask_file) as f:
+                        selected_subtask_infos.append((subtask_idx, json.load(f)))
+
+                start_frame, end_frame = resolve_subtask_frame_range(
+                    demo_data_dir=demo_data_dir,
+                    task_index=task_idx,
+                    episode_index=episode_index,
+                    subtask_index=subtask_start_idx,
+                    subtask_end_index=subtask_end_idx,
                 )
 
-            for subtask_file in subtask_files:
-                subtask_idx = int(subtask_file.stem.split("_")[1])
-                with open(subtask_file) as f:
-                    subtask_info = json.load(f)
-
-                if subtask_idx == subtask_index_filter:
-                    start_frame, end_frame = resolve_subtask_frame_range(
-                        demo_data_dir=demo_data_dir,
-                        task_index=task_idx,
-                        episode_index=episode_index,
-                        subtask_index=subtask_idx,
-                    )
-                else:
-                    start_frame = int(subtask_info["start_frame"])
-                    end_frame = int(subtask_info["end_frame"])
-
-                if skill_filter is not None and subtask_info["skill_description"] not in skill_filter:
+                selected_skill_descriptions = [
+                    info["skill_description"] for _, info in selected_subtask_infos
+                ]
+                if skill_filter is not None and not all(skill in skill_filter for skill in selected_skill_descriptions):
                     continue
 
-                subtask_desc = subtask_info["cot_subtask_description"]
-                skill_desc = subtask_info["skill_description"]
+                start_subtask_info = selected_subtask_infos[0][1]
+                end_subtask_info = selected_subtask_infos[-1][1]
+                subtask_desc = (
+                    start_subtask_info["cot_subtask_description"]
+                    if subtask_start_idx == subtask_end_idx
+                    else " -> ".join(info["cot_subtask_description"] for _, info in selected_subtask_infos)
+                )
+                skill_desc = (
+                    start_subtask_info["skill_description"]
+                    if subtask_start_idx == subtask_end_idx
+                    else " -> ".join(selected_skill_descriptions)
+                )
+                subtask_label = _format_subtask_range_label(subtask_start_idx, subtask_end_idx)
 
                 logger.info("")
                 logger.info("=" * 60)
                 logger.info(
-                    f"Episode {episode_index} | Subtask {subtask_idx} | {subtask_desc}"
+                    f"Episode {episode_index} | Subtask {subtask_label} | {subtask_desc}"
                 )
                 logger.info(
-                    f"Skill: {skill_desc} | Frames: {start_frame}-{end_frame} | Instance: {instance_id}"
+                    f"Skills: {skill_desc} | Frames: {start_frame}-{end_frame} | Instance: {instance_id}"
                 )
                 logger.info("=" * 60)
 
@@ -579,12 +603,18 @@ def _run_subtask_eval(config, logger):
                     demo_data_dir, task_idx, episode_index, start_frame,
                 )
 
+                start_stage_name = _resolve_subtask_reward_stage_name(
+                    evaluator=evaluator,
+                    subtask_idx=subtask_start_idx,
+                )
                 target_stage_name = _resolve_subtask_reward_stage_name(
                     evaluator=evaluator,
-                    subtask_idx=subtask_idx,
+                    subtask_idx=subtask_end_idx,
                 )
-                _prime_task_reward_for_subtask(evaluator=evaluator, subtask_idx=subtask_idx)
-                logger.info(f"Reward stage target: {target_stage_name}")
+                _prime_task_reward_for_subtask(evaluator=evaluator, subtask_idx=subtask_start_idx)
+                logger.info(
+                    f"Reward stage window: {start_stage_name} -> {target_stage_name}"
+                )
 
                 subtask_duration = end_frame - start_frame
                 subtask_max_steps = int(subtask_duration * config.subtask_max_steps_multiplier)
@@ -595,13 +625,15 @@ def _run_subtask_eval(config, logger):
                 done = False
                 step_count = 0
                 reward_stage_success = False
+                reached_target_stage = False
                 reward_stage_info = {}
                 reward_info = {}
                 if config.write_video:
                     video_name = (
                         str(video_path)
-                        + f"/{config.task.name}_ep{episode_index}_st{subtask_idx}"
-                        + f"_{skill_desc.replace(' ', '_')}.mp4"
+                        + f"/{config.task.name}_ep{episode_index}_st{subtask_start_idx}"
+                        + ("" if subtask_start_idx == subtask_end_idx else f"_to_{subtask_end_idx}")
+                        + f"_{start_subtask_info['skill_description'].replace(' ', '_')}.mp4"
                     )
                     evaluator.video_writer = create_video_writer(
                         fpath=video_name,
@@ -619,12 +651,13 @@ def _run_subtask_eval(config, logger):
                         info=info,
                         target_stage_name=target_stage_name,
                     )
+                    reached_target_stage = reached_target_stage or reward_stage_success
 
                     if (
                         terminated
                         or truncated
                         or step_count >= subtask_max_steps
-                        or reward_stage_success
+                        or (reward_stage_success and not config.keep_running_after_success)
                         or evaluator.last_policy_done
                     ):
                         done = True
@@ -654,16 +687,24 @@ def _run_subtask_eval(config, logger):
                 )
                 logger.info(f"Reward stage result: {target_stage_name} -> {reward_stage_info}")
                 if evaluator.last_policy_done:
-                    logger.info("Policy server reported done at the end of the selected subtask clip.")
+                    logger.info("Policy server reported done at the end of the selected subtask clip/range.")
 
                 subtask_result = {
                     "episode_index": episode_index,
-                    "subtask_idx": subtask_idx,
+                    "subtask_idx": subtask_start_idx,
+                    "subtask_start_idx": subtask_start_idx,
+                    "subtask_end_idx": subtask_end_idx,
+                    "subtask_range_label": subtask_label,
                     "skill_description": skill_desc,
+                    "skill_descriptions": selected_skill_descriptions,
                     "cot_subtask_description": subtask_desc,
-                    "manipulating_object_id": subtask_info.get("manipulating_object_id", []),
+                    "cot_subtask_descriptions": [
+                        info["cot_subtask_description"] for _, info in selected_subtask_infos
+                    ],
+                    "manipulating_object_id": end_subtask_info.get("manipulating_object_id", []),
                     "steps": step_count,
-                    "subtask_success": reward_stage_success,
+                    "subtask_success": reached_target_stage,
+                    "reward_start_stage_name": start_stage_name,
                     "reward_stage_name": target_stage_name,
                     "reward_stage_info": reward_stage_info,
                     "reward_current_stage_name": reward_info.get("current_stage_name"),
@@ -672,7 +713,12 @@ def _run_subtask_eval(config, logger):
                 }
                 summary_results.append(subtask_result)
 
-                metrics_file = metrics_path / f"{config.task.name}_ep{episode_index}_st{subtask_idx}.json"
+                metrics_suffix = (
+                    f"st{subtask_start_idx}"
+                    if subtask_start_idx == subtask_end_idx
+                    else f"st{subtask_start_idx}_to_{subtask_end_idx}"
+                )
+                metrics_file = metrics_path / f"{config.task.name}_ep{episode_index}_{metrics_suffix}.json"
                 with open(metrics_file, "w") as f:
                     json.dump(subtask_result, f, indent=2)
 

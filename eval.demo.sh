@@ -2,7 +2,9 @@ REPO_ROOT=${REPO_ROOT:-/home/dell/mjwei/BEHAVIOR-1K}
 B1K_DEMO_ROOT=${B1K_DEMO_ROOT:-/home/dell/mjwei/download_models/2025-challenge-demos}
 TASK=${TASK:-turning_on_radio}
 DEMO_EPISODE_INDEX=${DEMO_EPISODE_INDEX:-10}
-SUBTASK_INDEX=${SUBTASK_INDEX:-}
+SUBTASK_INDEX=${SUBTASK_INDEX:-1}
+SUBTASK_END_INDEX=${SUBTASK_END_INDEX:-2}
+MAX_STEPS=${MAX_STEPS:-1200}
 MODEL_HOST=${MODEL_HOST:-0.0.0.0}
 MODEL_PORT=${MODEL_PORT:-8007}
 PYTHON_BIN=${PYTHON_BIN:-python}
@@ -19,6 +21,12 @@ fi
 SERVER_ARGS=()
 if [ -n "${SUBTASK_INDEX}" ]; then
   SERVER_ARGS+=(--subtask-index "${SUBTASK_INDEX}")
+  if [ -n "${SUBTASK_END_INDEX}" ]; then
+    SERVER_ARGS+=(--subtask-end-index "${SUBTASK_END_INDEX}")
+  fi
+fi
+if [ -n "${MAX_STEPS}" ]; then
+  SERVER_ARGS+=(--max-steps "${MAX_STEPS}")
 fi
 
 echo "=========================================="
@@ -26,7 +34,14 @@ echo "Serving demo expert for task: ${TASK}"
 echo "Demo root: ${B1K_DEMO_ROOT}"
 echo "Episode index: ${DEMO_EPISODE_INDEX}"
 if [ -n "${SUBTASK_INDEX}" ]; then
-  echo "Subtask index: ${SUBTASK_INDEX}"
+  if [ -n "${SUBTASK_END_INDEX}" ]; then
+    echo "Subtask range: ${SUBTASK_INDEX} -> ${SUBTASK_END_INDEX}"
+  else
+    echo "Subtask index: ${SUBTASK_INDEX}"
+  fi
+fi
+if [ -n "${MAX_STEPS}" ]; then
+  echo "Max steps override: ${MAX_STEPS}"
 fi
 echo "Endpoint: ${MODEL_HOST}:${MODEL_PORT}"
 echo "=========================================="
