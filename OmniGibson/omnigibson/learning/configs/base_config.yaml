@@ -8,6 +8,39 @@ env_wrapper:
   _target_: omnigibson.learning.wrappers.RGBLowResWrapper
 policy_name: ???  # filled by policy
 headless: true  # whether to run in headless mode (no GUI)
-eval_instance_ids: null  # specific list of instance ids to eval on, if null test on all instances
+eval_level: instance  # "instance" or "subtask"; explicitly selects which evaluation loop to run
+eval_on_train_instances: false  # whether to eval on training instances
+eval_instance_ids: null  # specific list of instance ids to eval in instance mode, if null test on all instances
 write_video: true # whether we record videos during rollout
 log_path: ???
+test_hidden: false  # [Internal use only] whether to eval on hidden test instances
+policy_endpoints: {}  # switchable policy servers: {name: {host: str, port: int}}
+
+# + additional config
+env_wrapper: 
+  _target_: behavior.learning.wrappers.RGBWrapper
+
+save_rollout: false
+perturb_pose: false
+perturb_pose_seed: 42
+
+# parallel evaluator
+use_parallel_evaluator: false
+parallel_evaluator_start_idx: 0
+parallel_evaluator_end_idx: 10
+
+# subtask evaluation from demo data
+demo_data_dir: null  # path to 2025-challenge-demos root, used by subtask eval for orchestrators / annotations / parquet state
+subtask_episode_indices: null  # full episode indices to eval in subtask mode, e.g. [10, 20]; null = all episodes under the task orchestrator
+subtask_index: null  # optional subtask index to run within each selected episode, e.g. 0 for the first subtask only
+subtask_skill_filter: null  # list of skill_description to include, e.g. ["pick up from"], null = all
+subtask_max_steps_multiplier: 3  # max_steps = (end_frame - start_frame) * multiplier
+
+# instance-level reward selection
+instance_reward_mode: potential  # "potential", "task", or "combined"
+task_specific_reward_kwargs: {}
+
+# parquet demo expert policy support
+demo_expert_data_dir: null  # path to 2025-challenge-demos root for parquet-backed demo replay
+demo_expert_episode_index: null  # full episode index, e.g. 10 for task-0000/episode_00000010.parquet
+demo_expert_require_train_instance_match: true  # ensure eval instance matches the training demo instance

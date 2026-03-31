@@ -40,13 +40,28 @@ class WebsocketClientPolicy:
             self._uri += f":{port}"
         self._packer = Packer()
         self._api_key = api_key
-        self._ws, self._server_metadata = self._wait_for_server()
+        self._ws, self._server_metadata = None, None
+        self._allow_reconnect = allow_reconnect
+        self._last_done = False
 
     def get_server_metadata(self) -> Dict:
         return self._server_metadata
 
-    def _wait_for_server(self) -> Tuple[websockets.sync.client.ClientConnection, Dict]:
-        logging.info(f"Waiting for server at {self._uri}...")
+    @property
+    def is_done(self) -> bool:
+        return self._last_done
+
+    def _wait_for_server(self) -> Tuple[Any, Dict]:
+        # TODO [Wensi]: use URL parser instead of this
+        # Extract host and port for health check
+        host_port = self._uri.replace("ws://", "").replace("wss://", "")
+        if ":" in host_port:
+            host, port = host_port.split(":")
+            health_url = f"https://{host}:{port}/healthz" if int(port) == 443 else f"http://{host}:{port}/healthz"
+        else:
+            health_url = f"http://{host_port}/healthz"
+
+        # First, wait for the health check to pass
         while True:
             try:
                 headers = {"Authorization": f"Api-Key {self._api_key}"} if self._api_key else None
@@ -73,13 +88,24 @@ class WebsocketClientPolicy:
             # we're expecting bytes; if the server sends a string, it's an error.
             raise RuntimeError(f"Error in inference server:\n{response}")
         action_dict = unpackb(response)
-        action_np = deepcopy(action_dict["action"])
+        self._last_done = bool(action_dict.get("done", False))
+        try:
+            action_np = deepcopy(action_dict["action"])
+        except KeyError:
+            # We try getting action one more time before raising error
+            logger.warning("No action received from server, retrying one more time...")
+            self._ws.send(data)
+            response = self._ws.recv()
+            action_dict = unpackb(response)
+            self._last_done = bool(action_dict.get("done", False))
+            action_np = deepcopy(action_dict["action"])
         action = th.from_numpy(action_np).to(th.float32)
         return action
 
     def reset(self) -> None:
         data = self._packer.pack({"reset": True})
         self._ws.send(data)
+        self._last_done = False
 
 
 class WebsocketPolicyServer:

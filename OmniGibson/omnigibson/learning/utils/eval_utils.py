@@ -1,4 +1,5 @@
 from copy import deepcopy
+import json
 import logging
 import os
 from typing import Dict, List
@@ -266,6 +267,54 @@ def resolve_demo_annotation_path(demo_data_dir, task_index, episode_index):
         else None
     )
     return annotation_path if annotation_path is not None and os.path.exists(annotation_path) else None
+
+
+def get_subtask_annotation_path(demo_data_dir, task_index, episode_index, subtask_index):
+    return os.path.join(
+        demo_data_dir,
+        "orchestrators",
+        f"task-{task_index:04d}",
+        f"episode_{int(episode_index):08d}",
+        f"subtask_{int(subtask_index)}_annotated.json",
+    )
+
+
+def load_subtask_annotation(demo_data_dir, task_index, episode_index, subtask_index):
+    annotation_path = get_subtask_annotation_path(
+        demo_data_dir=demo_data_dir,
+        task_index=task_index,
+        episode_index=episode_index,
+        subtask_index=subtask_index,
+    )
+    assert os.path.exists(annotation_path), f"Subtask annotation not found: {annotation_path}"
+    with open(annotation_path, "r") as f:
+        return annotation_path, json.load(f)
+
+
+def resolve_subtask_frame_range(demo_data_dir, task_index, episode_index, subtask_index):
+    """
+    Resolve the inclusive-exclusive frame range [start_frame, end_frame) for a
+    specific annotated subtask.
+    """
+    annotation_path, subtask_info = load_subtask_annotation(
+        demo_data_dir=demo_data_dir,
+        task_index=task_index,
+        episode_index=episode_index,
+        subtask_index=subtask_index,
+    )
+    start_frame = subtask_info.get("start_frame")
+    end_frame = subtask_info.get("end_frame")
+    assert isinstance(start_frame, int), (
+        f"Subtask annotation {annotation_path} is missing an integer start_frame: {start_frame}"
+    )
+    assert isinstance(end_frame, int), (
+        f"Subtask annotation {annotation_path} is missing an integer end_frame: {end_frame}"
+    )
+    assert start_frame < end_frame, (
+        f"Subtask annotation {annotation_path} has invalid frame range: "
+        f"start_frame={start_frame}, end_frame={end_frame}"
+    )
+    return start_frame, end_frame
 
 
 def sync_task_reward_annotation_for_episode(task, demo_data_dir, task_index, episode_index, logger=None):
