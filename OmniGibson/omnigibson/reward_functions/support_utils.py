@@ -12,6 +12,44 @@ from omnigibson.utils.ui_utils import create_module_logger
 log = create_module_logger(module_name=__name__)
 
 
+def find_task_object(task, preferred_label=None, preferred_category=None, required_state=None):
+    normalized_label = _normalize_text(preferred_label) if preferred_label else None
+    label_tokens = [tok for tok in (normalized_label or "").split() if tok]
+    best_obj = None
+    best_score = -1
+
+    for scope_name, obj in task.object_scope.items():
+        if obj is None or getattr(obj, "synset", None) == "agent":
+            continue
+        if required_state is not None and (not hasattr(obj, "states") or required_state not in obj.states):
+            continue
+
+        candidate_text = " ".join(
+            _normalize_text(field)
+            for field in (
+                scope_name,
+                getattr(obj, "name", ""),
+                getattr(obj, "category", ""),
+                getattr(obj, "model", ""),
+                getattr(obj, "synset", ""),
+            )
+            if field
+        )
+        score = 1 if required_state is not None else 0
+        if preferred_category and preferred_category in candidate_text:
+            score += 3
+        if normalized_label:
+            if normalized_label in candidate_text:
+                score += 3
+            score += sum(token in candidate_text for token in label_tokens)
+
+        if score > best_score:
+            best_score = score
+            best_obj = obj
+
+    return best_obj if best_score > 0 else None
+
+
 def parse_support_label_from_annotation(annotation_path):
     if annotation_path is None:
         return None
@@ -109,13 +147,6 @@ def find_support_object(task, env, target_obj, support_label=None):
                 )
 
     return None
-
-
-def infer_support_surface_height(obj):
-    if obj is None:
-        return None
-    center, _, extent, _ = obj.get_base_aligned_bbox(xy_aligned=True)
-    return (center[2] + extent[2] / 2.0).item()
 
 
 def get_obj_center(obj):
@@ -222,7 +253,7 @@ def is_same_object(obj_a, obj_b):
     return False
 
 
-def is_supported_by_surface(target_obj, support_obj, support_surface_height, support_contact_tolerance):
+def is_supported_by_surface(target_obj, support_obj):
     if target_obj is None or support_obj is None:
         return False
 
@@ -259,22 +290,7 @@ def is_supported_by_surface(target_obj, support_obj, support_surface_height, sup
 
     if not support_below_target:
         return False
-    if touching_support:
-        return True
-    if support_surface_height is None:
-        return False
-
-    try:
-        center, _, extent, _ = target_obj.get_base_aligned_bbox(xy_aligned=True)
-        bottom_gap_above_support = (center[2] - extent[2] / 2.0).item() - support_surface_height
-        return bottom_gap_above_support <= support_contact_tolerance
-    except (AttributeError, RuntimeError, TypeError, ValueError) as exc:
-        _warn_exception(
-            "Target bounding-box query",
-            exc,
-            "Disabling the geometric support-contact fallback for this step.",
-        )
-        return False
+    return touching_support
 
 
 def _warn_exception(context, exc, fallback_message):
