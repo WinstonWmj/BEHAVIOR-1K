@@ -1,10 +1,10 @@
 from omnigibson.object_states.toggle import ToggledOn, m as toggle_macros
 from omnigibson.reward_functions.sequential_task_reward import SequentialTaskReward
 from omnigibson.reward_functions.support_utils import (
+    find_task_object,
     find_support_object,
     get_min_eef_distance_to_obj,
     get_min_eef_distance_to_toggle,
-    infer_support_surface_height,
     is_supported_by_surface,
     is_target_in_hand,
     parse_support_label_from_annotation,
@@ -21,7 +21,6 @@ class TurningOnRadioReward(SequentialTaskReward):
         move_to_dense_scale=0.3,
         pickup_progress_scale=3.0,
         pickup_dense_scale=0.35,
-        support_contact_tolerance=0.03,
         press_progress_scale=6.0,
         press_dense_scale=0.25,
         toggle_progress_scale=0.5,
@@ -36,7 +35,6 @@ class TurningOnRadioReward(SequentialTaskReward):
         self.move_to_dense_scale = move_to_dense_scale
         self.pickup_progress_scale = pickup_progress_scale
         self.pickup_dense_scale = pickup_dense_scale
-        self.support_contact_tolerance = support_contact_tolerance
         self.press_progress_scale = press_progress_scale
         self.press_dense_scale = press_dense_scale
         self.toggle_progress_scale = toggle_progress_scale
@@ -47,7 +45,6 @@ class TurningOnRadioReward(SequentialTaskReward):
         self._target_obj = None
         self._toggle_state = None
         self._support_obj = None
-        self._support_surface_height = None
         self._support_label = None
         self._has_left_support = False
         self._has_picked_up = False
@@ -55,14 +52,12 @@ class TurningOnRadioReward(SequentialTaskReward):
         super().__init__(stage_completion_bonus=stage_completion_bonus)
 
     def reset(self, task, env):
-        self._target_obj = None
-        for obj in task.object_scope.values():
-            if getattr(obj, "synset", None) == "agent":
-                continue
-            if hasattr(obj, "states") and ToggledOn in obj.states:
-                self._target_obj = obj
-                break
-
+        self._target_obj = find_task_object(
+            task=task,
+            preferred_label="radio",
+            preferred_category="radio",
+            required_state=ToggledOn,
+        )
         self._toggle_state = self._target_obj.states[ToggledOn] if self._target_obj is not None else None
         self._support_label = parse_support_label_from_annotation(self.annotation_path)
         self._support_obj = find_support_object(
@@ -71,7 +66,6 @@ class TurningOnRadioReward(SequentialTaskReward):
             target_obj=self._target_obj,
             support_label=self._support_label,
         )
-        self._support_surface_height = infer_support_surface_height(self._support_obj)
         self._has_left_support = False
         self._has_picked_up = False
         super().reset(task, env)
@@ -118,8 +112,6 @@ class TurningOnRadioReward(SequentialTaskReward):
             on_support = is_supported_by_surface(
                 self._target_obj,
                 self._support_obj,
-                self._support_surface_height,
-                self.support_contact_tolerance,
             )
             self._has_left_support = self._has_left_support or (not on_support)
             self._has_picked_up = self._has_picked_up or (self._has_left_support and in_hand)
@@ -173,8 +165,6 @@ class TurningOnRadioReward(SequentialTaskReward):
             on_support = is_supported_by_surface(
                 self._target_obj,
                 self._support_obj,
-                self._support_surface_height,
-                self.support_contact_tolerance,
             )
             progress_reward = self._progress_reward(
                 stage_state["prev_eef_distance"], distance, self.placedown_progress_scale, invert=True
