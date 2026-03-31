@@ -2,6 +2,7 @@ import argparse
 import asyncio
 import functools
 import http
+import importlib.util
 import logging
 import msgpack
 from pathlib import Path
@@ -21,58 +22,21 @@ logger = logging.getLogger("demo_expert_policy_server")
 logger.setLevel(logging.INFO)
 
 
-TASK_NAMES_TO_INDICES = {
-    "turning_on_radio": 0,
-    "picking_up_trash": 1,
-    "putting_away_Halloween_decorations": 2,
-    "cleaning_up_plates_and_food": 3,
-    "can_meat": 4,
-    "setting_mousetraps": 5,
-    "hiding_Easter_eggs": 6,
-    "picking_up_toys": 7,
-    "rearranging_kitchen_furniture": 8,
-    "putting_up_Christmas_decorations_inside": 9,
-    "set_up_a_coffee_station_in_your_kitchen": 10,
-    "putting_dishes_away_after_cleaning": 11,
-    "preparing_lunch_box": 12,
-    "loading_the_car": 13,
-    "carrying_in_groceries": 14,
-    "bringing_in_wood": 15,
-    "moving_boxes_to_storage": 16,
-    "bringing_water": 17,
-    "tidying_bedroom": 18,
-    "outfit_a_basic_toolbox": 19,
-    "sorting_vegetables": 20,
-    "collecting_childrens_toys": 21,
-    "putting_shoes_on_rack": 22,
-    "boxing_books_up_for_storage": 23,
-    "storing_food": 24,
-    "clearing_food_from_table_into_fridge": 25,
-    "assembling_gift_baskets": 26,
-    "sorting_household_items": 27,
-    "getting_organized_for_work": 28,
-    "clean_up_your_desk": 29,
-    "setting_the_fire": 30,
-    "clean_boxing_gloves": 31,
-    "wash_a_baseball_cap": 32,
-    "wash_dog_toys": 33,
-    "hanging_pictures": 34,
-    "attach_a_camera_to_a_tripod": 35,
-    "clean_a_patio": 36,
-    "clean_a_trumpet": 37,
-    "spraying_for_bugs": 38,
-    "spraying_fruit_trees": 39,
-    "make_microwave_popcorn": 40,
-    "cook_cabbage": 41,
-    "chop_an_onion": 42,
-    "slicing_vegetables": 43,
-    "chopping_wood": 44,
-    "cook_hot_dogs": 45,
-    "cook_bacon": 46,
-    "freeze_pies": 47,
-    "canning_food": 48,
-    "make_pizza": 49,
-}
+def _load_eval_utils_helpers():
+    """
+    Load eval_utils directly from its source file so this lightweight websocket
+    server can reuse the shared subtask helpers without importing the full
+    `omnigibson` package initialization chain.
+    """
+    module_path = Path(__file__).resolve().parent / "utils" / "eval_utils.py"
+    spec = importlib.util.spec_from_file_location("demo_expert_eval_utils", module_path)
+    assert spec is not None and spec.loader is not None, f"Failed to load eval_utils from {module_path}"
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module.TASK_NAMES_TO_INDICES, module.resolve_subtask_frame_range
+
+
+TASK_NAMES_TO_INDICES, resolve_subtask_frame_range = _load_eval_utils_helpers()
 
 
 def pack_array(obj: Any):
@@ -112,7 +76,13 @@ unpackb = functools.partial(msgpack.unpackb, object_hook=unpack_array)
 
 
 class ParquetDemoReplayPolicy:
-    def __init__(self, parquet_path: Path, start_frame: int = 0):
+    def __init__(
+        self,
+        parquet_path: Path,
+        start_frame: int = 0,
+        end_frame: int | None = None,
+        subtask_index: int | None = None,
+    ):
         self.parquet_path = Path(parquet_path)
         assert self.parquet_path.exists(), f"Parquet file not found: {self.parquet_path}"
 
@@ -121,21 +91,33 @@ class ParquetDemoReplayPolicy:
         assert 0 <= start_frame < len(df), (
             f"start_frame={start_frame} must be in [0, {len(df) - 1}] for {self.parquet_path}"
         )
+        if end_frame is None:
+            end_frame = len(df)
+        assert start_frame < end_frame <= len(df), (
+            f"Expected start_frame < end_frame <= {len(df)} for {self.parquet_path}, "
+            f"got start_frame={start_frame}, end_frame={end_frame}"
+        )
 
         self._actions = [np.asarray(action, dtype=np.float32) for action in df["action"].tolist()]
         self._episode_index = int(df["episode_index"].iloc[0]) if "episode_index" in df.columns else None
         self._task_index = int(df["task_index"].iloc[0]) if "task_index" in df.columns else None
+        self._subtask_index = subtask_index
         self._start_frame = int(start_frame)
+        self._end_frame = int(end_frame)
         self._cursor = int(start_frame)
         self._last_action = self._actions[self._cursor].copy()
+        self._done = False
+        self._done_logged = False
 
         logger.info(
-            "Loaded demo expert parquet: path=%s frames=%d episode_index=%s task_index=%s start_frame=%d",
+            "Loaded demo expert parquet: path=%s frames=%d episode_index=%s task_index=%s subtask_index=%s start_frame=%d end_frame=%d",
             self.parquet_path,
             len(self._actions),
             self._episode_index,
             self._task_index,
+            self._subtask_index,
             self._start_frame,
+            self._end_frame,
         )
 
     @property
@@ -145,28 +127,50 @@ class ParquetDemoReplayPolicy:
             "parquet_path": str(self.parquet_path),
             "episode_index": self._episode_index,
             "task_index": self._task_index,
+            "subtask_index": self._subtask_index,
             "instance_id": None if self._episode_index is None else int((self._episode_index // 10) % 1000),
             "start_frame": self._start_frame,
+            "end_frame": self._end_frame,
             "num_actions": len(self._actions),
+            "num_selected_actions": self._end_frame - self._start_frame,
         }
 
     def reset(self) -> None:
         self._cursor = self._start_frame
         self._last_action = self._actions[self._cursor].copy()
+        self._done = False
+        self._done_logged = False
         logger.info("Demo expert reset to frame %d", self._cursor)
+
+    @property
+    def is_done(self) -> bool:
+        return self._done
 
     def act(self, obs: dict) -> np.ndarray:
         del obs
+        if self._cursor >= self._end_frame:
+            self._done = True
+            if not self._done_logged:
+                logger.info(
+                    "Demo expert reached configured subtask end at frame %d (exclusive end_frame=%d).",
+                    self._cursor,
+                    self._end_frame,
+                )
+                self._done_logged = True
+            return self._last_action.copy()
+
         if self._cursor >= len(self._actions):
             logger.warning(
                 "Demo expert ran past the end of the parquet (%d actions). Repeating the last action.",
                 len(self._actions),
             )
+            self._done = True
             return self._last_action.copy()
 
         action = self._actions[self._cursor].copy()
         self._last_action = action
         self._cursor += 1
+        self._done = self._cursor >= self._end_frame
         return action
 
 
@@ -208,6 +212,7 @@ class DemoExpertWebsocketServer:
                     packer.pack(
                         {
                             "action": action,
+                            "done": self._policy.is_done,
                             "server_timing": {"infer_ms": 0.0},
                         }
                     )
@@ -244,20 +249,54 @@ def main() -> None:
     parser.add_argument("--episode-index", required=True, type=int, help="Full episode index, e.g. 10 or 130010.")
     parser.add_argument("--task-name", default=None, help="Optional task name used to sanity-check the episode index.")
     parser.add_argument("--task-index", default=None, type=int, help="Optional task index used to sanity-check the episode index.")
-    parser.add_argument("--start-frame", default=0, type=int, help="First parquet frame / action index to replay.")
+    parser.add_argument("--subtask-index", default=None, type=int, help="Optional subtask index used to auto-resolve the parquet frame range.")
+    parser.add_argument("--start-frame", default=0, type=int, help="Manual first parquet frame when --subtask-index is omitted.")
     parser.add_argument("--host", default="0.0.0.0", help="Websocket host to bind.")
     parser.add_argument("--port", default=8007, type=int, help="Websocket port to bind.")
     args = parser.parse_args()
 
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s")
 
+    resolved_task_index = args.task_index
+    if resolved_task_index is None and args.task_name is not None:
+        resolved_task_index = TASK_NAMES_TO_INDICES[args.task_name]
+
+    resolved_start_frame = args.start_frame
+    resolved_end_frame = None
+    if args.subtask_index is not None:
+        assert resolved_task_index is not None, "Either --task-name or --task-index is required when using --subtask-index."
+        if args.start_frame != 0:
+            logger.info(
+                "Ignoring explicit start_frame=%d because subtask_index=%d was provided.",
+                args.start_frame,
+                args.subtask_index,
+            )
+        resolved_start_frame, resolved_end_frame = resolve_subtask_frame_range(
+            demo_data_dir=args.demo_data_dir,
+            task_index=resolved_task_index,
+            episode_index=args.episode_index,
+            subtask_index=args.subtask_index,
+        )
+        logger.info(
+            "Resolved frame range [%d, %d) from subtask_index=%d for episode=%d",
+            resolved_start_frame,
+            resolved_end_frame,
+            args.subtask_index,
+            args.episode_index,
+        )
+
     parquet_path = _resolve_parquet_path(
         data_dir=Path(args.demo_data_dir),
         task_name=args.task_name,
-        task_index=args.task_index,
+        task_index=resolved_task_index,
         episode_index=args.episode_index,
     )
-    policy = ParquetDemoReplayPolicy(parquet_path=parquet_path, start_frame=args.start_frame)
+    policy = ParquetDemoReplayPolicy(
+        parquet_path=parquet_path,
+        start_frame=resolved_start_frame,
+        end_frame=resolved_end_frame,
+        subtask_index=args.subtask_index,
+    )
     server = DemoExpertWebsocketServer(policy=policy, host=args.host, port=args.port)
     server.serve_forever()
 

@@ -29,10 +29,13 @@ from omnigibson.learning.utils.eval_utils import (
     ROBOT_CAMERA_NAMES,
     PROPRIOCEPTION_INDICES,
     delay_termination_until_stage_completion,
+    extract_sequential_reward_info,
     generate_basic_environment_config,
     flatten_obs_dict,
     get_demo_annotation_path,
+    get_subtask_annotation_path,
     resolve_demo_annotation_path,
+    resolve_subtask_frame_range,
     summarize_stage_progress,
     sync_task_reward_annotation_for_episode,
     TASK_NAMES_TO_INDICES,
@@ -42,7 +45,6 @@ from omnigibson.learning.utils.obs_utils import (
     overlay_info_banner,
     write_video,
 )
-from omnigibson.learning.skill_evaluators import create_skill_evaluator
 from omnigibson.macros import gm, create_module_macros
 from omnigibson.metrics import MetricBase, AgentMetric, TaskMetric
 from omnigibson.robots import Robot
@@ -101,6 +103,7 @@ class Evaluator:
         self._video_writer = None
         self.last_step_info = {}
         self.last_step_reward = 0.0
+        self.last_policy_done = False
 
     def load_env(self, env_wrapper: DictConfig) -> EnvironmentWrapper:
         """
@@ -256,6 +259,7 @@ class Evaluator:
                 terminated = False
         self.last_step_reward = reward  # reward 已经是基于谓词进度的 delta 奖励（potential-based shaping）新满足一个谓词 → reward > 0，谓词退化 → reward < 0
         self.last_step_info = info
+        self.last_policy_done = bool(getattr(self.policy, "is_done", False))
         # process obs
         self.obs = self._preprocess_obs(obs)
 
@@ -473,6 +477,7 @@ class Evaluator:
         self.obs = self._preprocess_obs(self.env.reset()[0])
         self.last_step_info = {}
         self.last_step_reward = 0.0
+        self.last_policy_done = False
         # run metric start callbacks
         for metric in self.metrics:
             metric.start_callback(self.env)
@@ -504,10 +509,54 @@ class Evaluator:
         sys.exit(0)
 
 
+def _get_task_specific_reward(evaluator: Evaluator):
+    reward_functions = getattr(evaluator.env.task, "_reward_functions", {})
+    task_reward = reward_functions.get("task_specific") if isinstance(reward_functions, dict) else None
+    assert task_reward is not None, (
+        "Subtask reward-stage evaluation requires a task_specific reward. "
+        "Set instance_reward_mode=task or combined and provide a task-specific reward implementation."
+    )
+    return task_reward
+
+
+def _resolve_subtask_reward_stage_name(evaluator: Evaluator, subtask_idx: int) -> str:
+    task_reward = _get_task_specific_reward(evaluator)
+    stage_defs = getattr(task_reward, "_stage_defs", None)
+    assert isinstance(stage_defs, list) and len(stage_defs) > 0, (
+        "Subtask reward-stage evaluation requires an ordered sequential task reward with non-empty stage_defs."
+    )
+    assert subtask_idx < len(stage_defs), (
+        f"Subtask {subtask_idx} has no matching reward stage. "
+        f"Task reward only defines {len(stage_defs)} stages."
+    )
+    stage_name = stage_defs[subtask_idx].get("name")
+    assert stage_name is not None, f"Reward stage definition at index {subtask_idx} is missing a name."
+    return stage_name
+
+
+def _get_reward_stage_result(info: dict, target_stage_name: str) -> Tuple[bool, dict, dict]:
+    reward_info = extract_sequential_reward_info(info or {})
+    stage_infos = reward_info.get("stage_infos", {}) if isinstance(reward_info, dict) else {}
+    stage_info = stage_infos.get(target_stage_name, {}) if isinstance(stage_infos, dict) else {}
+    if not isinstance(stage_info, dict):
+        stage_info = {}
+    stage_completed = bool(stage_info.get("completed", False))
+    return stage_completed, stage_info, reward_info
+
+
+def _prime_task_reward_for_subtask(evaluator: Evaluator, subtask_idx: int) -> None:
+    task_reward = _get_task_specific_reward(evaluator)
+    if hasattr(task_reward, "set_active_stage_index"):
+        # When we jump into subtask i from demo state, earlier reward stages
+        # should already count as finished so logs and completion checks align.
+        task_reward.set_active_stage_index(subtask_idx)
+
+
 def _run_subtask_eval(config, logger):
     """Subtask-level evaluation: iterate episodes × subtasks from demo data."""
     task_idx = TASK_NAMES_TO_INDICES[config.task.name]
     demo_data_dir = config.demo_data_dir
+    assert demo_data_dir is not None, "demo_data_dir must be set when eval_level=subtask."
     orchestrator_dir = Path(demo_data_dir) / "orchestrators" / f"task-{task_idx:04d}"
     assert orchestrator_dir.exists(), f"Orchestrator dir not found: {orchestrator_dir}"
 
@@ -517,7 +566,18 @@ def _run_subtask_eval(config, logger):
     )
     all_episode_indices = [int(d.name.split("_")[1]) for d in all_episode_dirs]
 
-    if config.eval_instance_ids is not None:
+    if config.subtask_episode_indices is not None:
+        requested_episode_indices = [int(ep_idx) for ep_idx in config.subtask_episode_indices]
+        missing_episodes = sorted(set(requested_episode_indices) - set(all_episode_indices))
+        assert not missing_episodes, (
+            f"Requested subtask_episode_indices not found under {orchestrator_dir}: {missing_episodes}"
+        )
+        episodes_to_run = requested_episode_indices
+    elif config.eval_instance_ids is not None:
+        logger.warning(
+            "Using eval_instance_ids to select subtask episodes by position is deprecated. "
+            "Please use subtask_episode_indices with full episode ids instead."
+        )
         episodes_to_run = [all_episode_indices[i] for i in config.eval_instance_ids]
     else:
         episodes_to_run = all_episode_indices
@@ -525,10 +585,13 @@ def _run_subtask_eval(config, logger):
     skill_filter = None
     if config.subtask_skill_filter is not None:
         skill_filter = set(config.subtask_skill_filter)
+    subtask_index_filter = None if config.subtask_index is None else int(config.subtask_index)
 
-    eval_mode = config.subtask_eval_mode
-    logger.info(f"Subtask eval mode: {len(episodes_to_run)} episodes, skill_filter={skill_filter}")
-    logger.info(f"Skill evaluator mode: {eval_mode}")
+    logger.info(
+        f"Subtask eval mode: {len(episodes_to_run)} episodes, "
+        f"skill_filter={skill_filter}, subtask_index={subtask_index_filter}"
+    )
+    logger.info("Subtask success source: task-specific reward stage completion")
 
     if config.write_video:
         video_path = Path(config.log_path).expanduser() / "videos"
@@ -549,17 +612,38 @@ def _run_subtask_eval(config, logger):
                 ep_dir.glob("subtask_*_annotated.json"),
                 key=lambda p: int(p.stem.split("_")[1]),
             )
+            if subtask_index_filter is not None:
+                subtask_files = [Path(
+                    get_subtask_annotation_path(
+                        demo_data_dir=demo_data_dir,
+                        task_index=task_idx,
+                        episode_index=episode_index,
+                        subtask_index=subtask_index_filter,
+                    )
+                )]
+                assert subtask_files[0].parent == ep_dir, (
+                    f"Resolved subtask annotation path {subtask_files[0]} does not match episode directory {ep_dir}"
+                )
 
             for subtask_file in subtask_files:
+                subtask_idx = int(subtask_file.stem.split("_")[1])
                 with open(subtask_file) as f:
                     subtask_info = json.load(f)
+
+                if subtask_idx == subtask_index_filter:
+                    start_frame, end_frame = resolve_subtask_frame_range(
+                        demo_data_dir=demo_data_dir,
+                        task_index=task_idx,
+                        episode_index=episode_index,
+                        subtask_index=subtask_idx,
+                    )
+                else:
+                    start_frame = int(subtask_info["start_frame"])
+                    end_frame = int(subtask_info["end_frame"])
 
                 if skill_filter is not None and subtask_info["skill_description"] not in skill_filter:
                     continue
 
-                subtask_idx = int(subtask_file.stem.split("_")[1])
-                start_frame = subtask_info["start_frame"]
-                end_frame = subtask_info["end_frame"]
                 subtask_desc = subtask_info["cot_subtask_description"]
                 skill_desc = subtask_info["skill_description"]
 
@@ -587,17 +671,12 @@ def _run_subtask_eval(config, logger):
                     demo_data_dir, task_idx, episode_index, start_frame,
                 )
 
-                # --- Create skill evaluator ---
-                skill_eval_kwargs = {}
-                if eval_mode == "simple":
-                    skill_eval_kwargs["distance_threshold"] = config.subtask_success_distance
-                elif eval_mode == "advanced":
-                    skill_eval_kwargs["height_threshold"] = config.subtask_success_height
-                skill_eval = create_skill_evaluator(skill_desc, mode=eval_mode, **skill_eval_kwargs)
-                if skill_eval is not None:
-                    skill_eval.reset(evaluator, subtask_info)
-                else:
-                    logger.warning(f"No evaluator for skill '{skill_desc}', mode '{eval_mode}'")
+                target_stage_name = _resolve_subtask_reward_stage_name(
+                    evaluator=evaluator,
+                    subtask_idx=subtask_idx,
+                )
+                _prime_task_reward_for_subtask(evaluator=evaluator, subtask_idx=subtask_idx)
+                logger.info(f"Reward stage target: {target_stage_name}")
 
                 subtask_duration = end_frame - start_frame
                 subtask_max_steps = int(subtask_duration * config.subtask_max_steps_multiplier)
@@ -607,6 +686,9 @@ def _run_subtask_eval(config, logger):
 
                 done = False
                 step_count = 0
+                reward_stage_success = False
+                reward_stage_info = {}
+                reward_info = {}
                 if config.write_video:
                     video_name = (
                         str(video_path)
@@ -625,21 +707,28 @@ def _run_subtask_eval(config, logger):
                     terminated, truncated, reward, info = evaluator.step()
                     step_count += 1
 
-                    if skill_eval is not None:
-                        se_metrics = skill_eval.step(evaluator)
-                    else:
-                        se_metrics = {}
+                    reward_stage_success, reward_stage_info, reward_info = _get_reward_stage_result(
+                        info=info,
+                        target_stage_name=target_stage_name,
+                    )
 
-                    skill_success_now = skill_eval.is_success if skill_eval else False
-                    if terminated or truncated or step_count >= subtask_max_steps or skill_success_now:
+                    if (
+                        terminated
+                        or truncated
+                        or step_count >= subtask_max_steps
+                        or reward_stage_success
+                        or evaluator.last_policy_done
+                    ):
                         done = True
                     if config.write_video:
                         evaluator._write_video()
                     if step_count % 100 == 0:
                         logger.info(
                             f"  step={step_count}, bddl_reward={reward:.4f}, "
-                            f"skill_eval={se_metrics}"
+                            f"reward_stage={reward_stage_info}"
                         )
+                        for line in summarize_stage_progress(info):
+                            logger.info(f"  {line}")
 
                 if config.write_video and terminated:
                     for _ in range(3):
@@ -652,14 +741,12 @@ def _run_subtask_eval(config, logger):
                 for metric in evaluator.metrics:
                     metric.end_callback(evaluator.env)
 
-                # --- Log skill evaluator results ---
-                skill_success = skill_eval.is_success if skill_eval else False
-                skill_summary = skill_eval.summary if skill_eval else {}
-
                 logger.info(
                     f"Finished: steps={step_count}, terminated={terminated}, truncated={truncated}"
                 )
-                logger.info(f"Skill evaluator result: {skill_summary}")
+                logger.info(f"Reward stage result: {target_stage_name} -> {reward_stage_info}")
+                if evaluator.last_policy_done:
+                    logger.info("Policy server reported done at the end of the selected subtask clip.")
 
                 subtask_result = {
                     "episode_index": episode_index,
@@ -668,8 +755,12 @@ def _run_subtask_eval(config, logger):
                     "cot_subtask_description": subtask_desc,
                     "manipulating_object_id": subtask_info.get("manipulating_object_id", []),
                     "steps": step_count,
-                    "subtask_success": skill_success,
-                    **skill_summary,
+                    "subtask_success": reward_stage_success,
+                    "reward_stage_name": target_stage_name,
+                    "reward_stage_info": reward_stage_info,
+                    "reward_current_stage_name": reward_info.get("current_stage_name"),
+                    "reward_completed_stage_count": reward_info.get("completed_stage_count"),
+                    "reward_total_stage_count": reward_info.get("total_stage_count"),
                 }
                 summary_results.append(subtask_result)
 
@@ -687,9 +778,6 @@ def _run_subtask_eval(config, logger):
     logger.info("")
     logger.info("=" * 60)
     logger.info(f"SUBTASK EVAL SUMMARY: {n_success}/{n_total} succeeded ({100*n_success/max(n_total,1):.1f}%)")
-    if summary_results:
-        displacements = [r.get("max_displacement", 0) for r in summary_results]
-        logger.info(f"Avg max displacement: {np.mean(displacements):.4f}m")
     logger.info("=" * 60)
 
     summary_path = metrics_path / f"{config.task.name}_subtask_summary.json"
@@ -774,7 +862,7 @@ def _run_instance_eval(config, logger):
                     metric.start_callback(evaluator.env)
                 while not done:
                     terminated, truncated, reward, info = evaluator.step()
-                    if terminated or truncated:
+                    if terminated or truncated or evaluator.last_policy_done:
                         done = True
                     if config.write_video:
                         evaluator._write_video()
@@ -797,6 +885,8 @@ def _run_instance_eval(config, logger):
                     metric.end_callback(evaluator.env)
                 logger.info(f"Evaluation finished at step {evaluator.env._current_step}.")
                 logger.info(f"Evaluation exit state: {terminated}, {truncated}")
+                if evaluator.last_policy_done:
+                    logger.info("Policy server reported done and ended the replay clip.")
                 logger.info(f"Total trials: {evaluator.n_trials}")
                 logger.info(f"Total success trials: {evaluator.n_success_trials}")
                 for metric in evaluator.metrics:
@@ -817,7 +907,11 @@ if __name__ == "__main__":
     OmegaConf.resolve(config)
     gm.HEADLESS = config.headless
 
-    if config.demo_data_dir is not None:
+    assert config.eval_level in {"instance", "subtask"}, (
+        f"Unsupported eval_level '{config.eval_level}'. Expected 'instance' or 'subtask'."
+    )
+
+    if config.eval_level == "subtask":
         _run_subtask_eval(config, logger)
     else:
         _run_instance_eval(config, logger)

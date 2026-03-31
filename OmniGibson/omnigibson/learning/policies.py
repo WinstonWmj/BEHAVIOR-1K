@@ -62,9 +62,6 @@ class WebsocketPolicy:
         if host is not None or port is not None:
             self.policy = WebsocketClientPolicy(host=host, port=port, allow_reconnect=allow_reconnect)
 
-    def update_host(self, host: str, port: int) -> None:
-        self.policy = WebsocketClientPolicy(host=host, port=port, allow_reconnect=self._allow_reconnect)
-
     @property
     def endpoint(self) -> str:
         return f"{self._host}:{self._port}"
@@ -78,13 +75,17 @@ class WebsocketPolicy:
                 pass
         self._host = host
         self._port = port
-        self.policy = WebsocketClientPolicy(host=host, port=port)
+        self.policy = WebsocketClientPolicy(host=host, port=port, allow_reconnect=self._allow_reconnect)
         logging.info(f"WebsocketPolicy reconnected: {old_endpoint} -> {self.endpoint}")
 
     def forward(self, obs: dict, *args, **kwargs) -> th.Tensor:
         obs = torch_to_numpy(obs)
         self.last_action = self.policy.act(obs).detach().cpu()
         return self.last_action
+
+    @property
+    def is_done(self) -> bool:
+        return bool(self.policy is not None and getattr(self.policy, "is_done", False))
 
     def reset(self) -> None:
         if self.policy is not None:

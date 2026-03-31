@@ -49,9 +49,14 @@ class WebsocketClientPolicy:
         self._api_key = api_key
         self._ws, self._server_metadata = None, None
         self._allow_reconnect = allow_reconnect
+        self._last_done = False
 
     def get_server_metadata(self) -> Dict:
         return self._server_metadata
+
+    @property
+    def is_done(self) -> bool:
+        return self._last_done
 
     def _wait_for_server(self) -> Tuple[Any, Dict]:
         # TODO [Wensi]: use URL parser instead of this
@@ -127,6 +132,7 @@ class WebsocketClientPolicy:
             # we're expecting bytes; if the server sends a string, it's an error.
             raise RuntimeError(f"Error in inference server:\n{response}")
         action_dict = unpackb(response)
+        self._last_done = bool(action_dict.get("done", False))
         try:
             action_np = deepcopy(action_dict["action"])
         except KeyError:
@@ -135,6 +141,7 @@ class WebsocketClientPolicy:
             self._ws.send(data)
             response = self._ws.recv()
             action_dict = unpackb(response)
+            self._last_done = bool(action_dict.get("done", False))
             action_np = deepcopy(action_dict["action"])
         action = th.from_numpy(action_np).to(th.float32)
         return action
@@ -145,6 +152,7 @@ class WebsocketClientPolicy:
 
         data = self._packer.pack({"reset": True})
         self._ws.send(data)
+        self._last_done = False
 
 
 class WebsocketPolicyServer:

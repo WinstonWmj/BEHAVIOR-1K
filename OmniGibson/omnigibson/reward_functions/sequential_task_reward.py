@@ -35,6 +35,20 @@ class SequentialTaskReward(BaseRewardFunction):
         for stage in self._stage_defs:
             stage.setdefault("state", {})
 
+    def set_active_stage_index(self, stage_index: int) -> None:
+        """
+        Prime the sequential reward to treat all stages before `stage_index`
+        as already completed, making `stage_index` the current active stage.
+        """
+        assert 0 <= stage_index < self._total_stages, (
+            f"stage_index must be in [0, {self._total_stages - 1}], got {stage_index}"
+        )
+        self._stage_index = int(stage_index)
+        completed_stages = self._stage_defs[:stage_index]
+        self._completed_stage_names = {stage["name"] for stage in completed_stages}
+        for idx, stage in enumerate(self._stage_defs):
+            self._stage_cumulative_rewards[stage["name"]] = self.stage_completion_bonus if idx < stage_index else 0.0
+
     @abstractmethod
     def _build_stages(self, task, env):
         raise NotImplementedError()

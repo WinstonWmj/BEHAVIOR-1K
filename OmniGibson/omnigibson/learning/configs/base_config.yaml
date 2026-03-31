@@ -8,8 +8,9 @@ defaults:
 #   _target_: omnigibson.learning.wrappers.RGBLowResWrapper
 policy_name: ???  # filled by policy
 headless: true  # whether to run in headless mode (no GUI)
+eval_level: instance  # "instance" or "subtask"; explicitly selects which evaluation loop to run
 eval_on_train_instances: false  # whether to eval on training instances
-eval_instance_ids: null  # specific list of instance ids to eval on, if null test on all instances
+eval_instance_ids: null  # specific list of instance ids to eval in instance mode, if null test on all instances
 write_video: true # whether we record videos during rollout
 partial_scene_load: false  # whether to only load task-relevant rooms for a specific task
 max_steps: null  # max steps per rollout episode, setting to null will use the default value (2 x average human demo completion steps)
@@ -31,12 +32,11 @@ parallel_evaluator_start_idx: 0
 parallel_evaluator_end_idx: 10
 
 # subtask evaluation from demo data
-demo_data_dir: null  # path to 2025-challenge-demos root, enables subtask eval mode when set
+demo_data_dir: null  # path to 2025-challenge-demos root, used by subtask eval for orchestrators / annotations / parquet state
+subtask_episode_indices: null  # full episode indices to eval in subtask mode, e.g. [10, 20]; null = all episodes under the task orchestrator
+subtask_index: null  # optional subtask index to run within each selected episode, e.g. 0 for the first subtask only
 subtask_skill_filter: null  # list of skill_description to include, e.g. ["pick up from"], null = all
 subtask_max_steps_multiplier: 3  # max_steps = (end_frame - start_frame) * multiplier
-subtask_eval_mode: simple  # "simple" (displacement) or "advanced" (grasp+lift+stability)
-subtask_success_distance: 0.3  # [simple mode] displacement threshold in meters
-subtask_success_height: 0.15  # [advanced mode] lift height threshold in meters
 
 # instance-level reward selection
 instance_reward_mode: potential  # "potential", "task", or "combined"
@@ -45,5 +45,4 @@ task_specific_reward_kwargs: {}
 # parquet demo expert policy support
 demo_expert_data_dir: null  # path to 2025-challenge-demos root for parquet-backed demo replay
 demo_expert_episode_index: null  # full episode index, e.g. 10 for task-0000/episode_00000010.parquet
-demo_expert_start_frame: 0  # first parquet frame / action index to replay
 demo_expert_require_train_instance_match: true  # ensure eval instance matches the training demo instance
