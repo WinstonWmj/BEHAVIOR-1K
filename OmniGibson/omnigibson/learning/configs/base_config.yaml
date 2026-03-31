@@ -14,6 +14,8 @@ eval_instance_ids: null  # specific list of instance ids to eval in instance mod
 write_video: true # whether we record videos during rollout
 partial_scene_load: false  # whether to only load task-relevant rooms for a specific task
 max_steps: null  # max steps per rollout episode, setting to null will use the default value (2 x average human demo completion steps)
+waiting_for_stage_completion: true  # if env success fires before all sequential stages complete, keep the rollout alive until the stage chain catches up
+keep_running_after_success: true  # if all stages are already complete, optionally continue the rollout after success until another stop condition ends it
 log_path: ???
 test_hidden: false  # [Internal use only] whether to eval on hidden test instances
 policy_endpoints: {}  # switchable policy servers: {name: {host: str, port: int}}
@@ -34,7 +36,8 @@ parallel_evaluator_end_idx: 10
 # subtask evaluation from demo data
 demo_data_dir: null  # path to 2025-challenge-demos root, used by subtask eval for orchestrators / annotations / parquet state
 subtask_episode_indices: null  # full episode indices to eval in subtask mode, e.g. [10, 20]; null = all episodes under the task orchestrator
-subtask_index: null  # optional subtask index to run within each selected episode, e.g. 0 for the first subtask only
+subtask_index: null  # optional starting subtask index to run within each selected episode, e.g. 1
+subtask_end_index: null  # optional inclusive end index; with subtask_index=1 and subtask_end_index=2 we run subtasks 1 -> 2 sequentially
 subtask_skill_filter: null  # list of skill_description to include, e.g. ["pick up from"], null = all
 subtask_max_steps_multiplier: 3  # max_steps = (end_frame - start_frame) * multiplier
 

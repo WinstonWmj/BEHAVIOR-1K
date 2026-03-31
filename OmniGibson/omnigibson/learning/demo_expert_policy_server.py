@@ -33,10 +33,14 @@ def _load_eval_utils_helpers():
     assert spec is not None and spec.loader is not None, f"Failed to load eval_utils from {module_path}"
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)
-    return module.TASK_NAMES_TO_INDICES, module.resolve_subtask_frame_range
+    return (
+        module.TASK_NAMES_TO_INDICES,
+        module.resolve_subtask_frame_range,
+        module.resolve_subtask_index_range,
+    )
 
 
-TASK_NAMES_TO_INDICES, resolve_subtask_frame_range = _load_eval_utils_helpers()
+TASK_NAMES_TO_INDICES, resolve_subtask_frame_range, resolve_subtask_index_range = _load_eval_utils_helpers()
 
 
 def pack_array(obj: Any):
@@ -81,7 +85,9 @@ class ParquetDemoReplayPolicy:
         parquet_path: Path,
         start_frame: int = 0,
         end_frame: int | None = None,
+        max_steps: int | None = None,
         subtask_index: int | None = None,
+        subtask_end_index: int | None = None,
     ):
         self.parquet_path = Path(parquet_path)
         assert self.parquet_path.exists(), f"Parquet file not found: {self.parquet_path}"
@@ -93,6 +99,9 @@ class ParquetDemoReplayPolicy:
         )
         if end_frame is None:
             end_frame = len(df)
+        if max_steps is not None:
+            assert max_steps > 0, f"max_steps must be positive, got {max_steps}"
+            end_frame = min(start_frame + int(max_steps), len(df))
         assert start_frame < end_frame <= len(df), (
             f"Expected start_frame < end_frame <= {len(df)} for {self.parquet_path}, "
             f"got start_frame={start_frame}, end_frame={end_frame}"
@@ -102,6 +111,8 @@ class ParquetDemoReplayPolicy:
         self._episode_index = int(df["episode_index"].iloc[0]) if "episode_index" in df.columns else None
         self._task_index = int(df["task_index"].iloc[0]) if "task_index" in df.columns else None
         self._subtask_index = subtask_index
+        self._subtask_end_index = subtask_index if subtask_end_index is None else subtask_end_index
+        self._max_steps = max_steps
         self._start_frame = int(start_frame)
         self._end_frame = int(end_frame)
         self._cursor = int(start_frame)
@@ -110,14 +121,16 @@ class ParquetDemoReplayPolicy:
         self._done_logged = False
 
         logger.info(
-            "Loaded demo expert parquet: path=%s frames=%d episode_index=%s task_index=%s subtask_index=%s start_frame=%d end_frame=%d",
+            "Loaded demo expert parquet: path=%s frames=%d episode_index=%s task_index=%s subtask_range=%s-%s start_frame=%d end_frame=%d max_steps=%s",
             self.parquet_path,
             len(self._actions),
             self._episode_index,
             self._task_index,
             self._subtask_index,
+            self._subtask_end_index,
             self._start_frame,
             self._end_frame,
+            self._max_steps,
         )
 
     @property
@@ -128,6 +141,8 @@ class ParquetDemoReplayPolicy:
             "episode_index": self._episode_index,
             "task_index": self._task_index,
             "subtask_index": self._subtask_index,
+            "subtask_end_index": self._subtask_end_index,
+            "max_steps": self._max_steps,
             "instance_id": None if self._episode_index is None else int((self._episode_index // 10) % 1000),
             "start_frame": self._start_frame,
             "end_frame": self._end_frame,
@@ -151,11 +166,19 @@ class ParquetDemoReplayPolicy:
         if self._cursor >= self._end_frame:
             self._done = True
             if not self._done_logged:
-                logger.info(
-                    "Demo expert reached configured subtask end at frame %d (exclusive end_frame=%d).",
-                    self._cursor,
-                    self._end_frame,
-                )
+                if self._max_steps is not None:
+                    logger.info(
+                        "Demo expert reached configured max_steps=%d at frame %d (exclusive end_frame=%d).",
+                        self._max_steps,
+                        self._cursor,
+                        self._end_frame,
+                    )
+                else:
+                    logger.info(
+                        "Demo expert reached configured subtask end at frame %d (exclusive end_frame=%d).",
+                        self._cursor,
+                        self._end_frame,
+                    )
                 self._done_logged = True
             return self._last_action.copy()
 
@@ -249,8 +272,10 @@ def main() -> None:
     parser.add_argument("--episode-index", required=True, type=int, help="Full episode index, e.g. 10 or 130010.")
     parser.add_argument("--task-name", default=None, help="Optional task name used to sanity-check the episode index.")
     parser.add_argument("--task-index", default=None, type=int, help="Optional task index used to sanity-check the episode index.")
-    parser.add_argument("--subtask-index", default=None, type=int, help="Optional subtask index used to auto-resolve the parquet frame range.")
+    parser.add_argument("--subtask-index", default=None, type=int, help="Optional starting subtask index used to auto-resolve the parquet frame range.")
+    parser.add_argument("--subtask-end-index", default=None, type=int, help="Optional inclusive end index for sequential replay from subtask-index to subtask-end-index.")
     parser.add_argument("--start-frame", default=0, type=int, help="Manual first parquet frame when --subtask-index is omitted.")
+    parser.add_argument("--max-steps", default=None, type=int, help="Optional replay step cap. When set, it overrides any resolved subtask end frame.")
     parser.add_argument("--host", default="0.0.0.0", help="Websocket host to bind.")
     parser.add_argument("--port", default=8007, type=int, help="Websocket port to bind.")
     args = parser.parse_args()
@@ -261,29 +286,44 @@ def main() -> None:
     if resolved_task_index is None and args.task_name is not None:
         resolved_task_index = TASK_NAMES_TO_INDICES[args.task_name]
 
+    resolved_subtask_range = resolve_subtask_index_range(
+        subtask_index=args.subtask_index,
+        subtask_end_index=args.subtask_end_index,
+    )
     resolved_start_frame = args.start_frame
     resolved_end_frame = None
-    if args.subtask_index is not None:
+    if resolved_subtask_range is not None:
+        resolved_subtask_start_idx, resolved_subtask_end_idx = resolved_subtask_range
         assert resolved_task_index is not None, "Either --task-name or --task-index is required when using --subtask-index."
         if args.start_frame != 0:
             logger.info(
-                "Ignoring explicit start_frame=%d because subtask_index=%d was provided.",
+                "Ignoring explicit start_frame=%d because subtask range %d-%d was provided.",
                 args.start_frame,
-                args.subtask_index,
+                resolved_subtask_start_idx,
+                resolved_subtask_end_idx,
             )
         resolved_start_frame, resolved_end_frame = resolve_subtask_frame_range(
             demo_data_dir=args.demo_data_dir,
             task_index=resolved_task_index,
             episode_index=args.episode_index,
-            subtask_index=args.subtask_index,
+            subtask_index=resolved_subtask_start_idx,
+            subtask_end_index=resolved_subtask_end_idx,
         )
         logger.info(
-            "Resolved frame range [%d, %d) from subtask_index=%d for episode=%d",
+            "Resolved frame range [%d, %d) from subtask range %d-%d for episode=%d",
             resolved_start_frame,
             resolved_end_frame,
-            args.subtask_index,
+            resolved_subtask_start_idx,
+            resolved_subtask_end_idx,
             args.episode_index,
         )
+    if args.max_steps is not None and resolved_end_frame is not None:
+        logger.info(
+            "Ignoring resolved end_frame=%d because max_steps=%d was provided.",
+            resolved_end_frame,
+            args.max_steps,
+        )
+        resolved_end_frame = None
 
     parquet_path = _resolve_parquet_path(
         data_dir=Path(args.demo_data_dir),
@@ -295,7 +335,9 @@ def main() -> None:
         parquet_path=parquet_path,
         start_frame=resolved_start_frame,
         end_frame=resolved_end_frame,
+        max_steps=args.max_steps,
         subtask_index=args.subtask_index,
+        subtask_end_index=args.subtask_end_index,
     )
     server = DemoExpertWebsocketServer(policy=policy, host=args.host, port=args.port)
     server.serve_forever()
