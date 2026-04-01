@@ -1,13 +1,11 @@
 from omnigibson.object_states.toggle import ToggledOn, m as toggle_macros
 from omnigibson.reward_functions.sequential_task_reward import SequentialTaskReward
 from omnigibson.reward_functions.support_utils import (
-    find_task_object,
-    find_support_object,
+    get_stage_objects,
     get_min_eef_distance_to_obj,
     get_min_eef_distance_to_toggle,
     is_supported_by_surface,
     is_target_in_hand,
-    parse_support_label_from_annotation,
 )
 
 
@@ -28,7 +26,7 @@ class TurningOnRadioReward(SequentialTaskReward):
         placedown_progress_scale=3.0,
         placedown_dense_scale=0.25,
         stage_completion_bonus=1.0,
-        annotation_path=None,
+        orchestrator_annotation_path=None,
     ):
         self.move_to_success_threshold = move_to_success_threshold
         self.move_to_progress_scale = move_to_progress_scale
@@ -41,47 +39,58 @@ class TurningOnRadioReward(SequentialTaskReward):
         self.toggle_progress_dense_scale = toggle_progress_dense_scale
         self.placedown_progress_scale = placedown_progress_scale
         self.placedown_dense_scale = placedown_dense_scale
-        self.annotation_path = annotation_path
-        self._target_obj = None
+        self.orchestrator_annotation_path = orchestrator_annotation_path
+        self._radio_obj = None
         self._toggle_state = None
         self._support_obj = None
-        self._support_label = None
+        self._stage_objects = {}
         self._has_left_support = False
         self._has_picked_up = False
         self._toggle_steps_required = int(getattr(toggle_macros, "CAN_TOGGLE_STEPS", 5))
         super().__init__(stage_completion_bonus=stage_completion_bonus)
 
     def reset(self, task, env):
-        self._target_obj = find_task_object(
-            task=task,
-            preferred_label="radio",
-            preferred_category="radio",
-            required_state=ToggledOn,
-        )
-        self._toggle_state = self._target_obj.states[ToggledOn] if self._target_obj is not None else None
-        self._support_label = parse_support_label_from_annotation(self.annotation_path)
-        self._support_obj = find_support_object(
-            task=task,
-            env=env,
-            target_obj=self._target_obj,
-            support_label=self._support_label,
-        )
+        self._stage_objects = {
+            "move_to_radio": get_stage_objects(env, self.orchestrator_annotation_path, 0, required_state=ToggledOn),
+            "pickup_from_support": get_stage_objects(env, self.orchestrator_annotation_path, 1),
+            "press_radio": get_stage_objects(env, self.orchestrator_annotation_path, 2, required_state=ToggledOn),
+            "place_on_support": get_stage_objects(env, self.orchestrator_annotation_path, 3),
+        }
+        self._radio_obj = self._stage_objects["move_to_radio"][0] if self._stage_objects["move_to_radio"] else None
+        self._toggle_state = self._radio_obj.states[ToggledOn] if self._radio_obj is not None else None
+        self._support_obj = self._stage_objects["pickup_from_support"][1] if len(self._stage_objects["pickup_from_support"]) > 1 else None
         self._has_left_support = False
         self._has_picked_up = False
         super().reset(task, env)
 
     def _build_stages(self, task, env):
-        if self._target_obj is None or self._toggle_state is None:
+        if self._radio_obj is None or self._toggle_state is None:
             return [{"name": "missing_target"}]
         return [
-            {"name": "move_to_radio", "state": {"prev_distance": None}},
-            {"name": "pickup_from_support", "state": {"prev_eef_distance": None}},
-            {"name": "press_radio", "state": {"prev_distance": None, "prev_toggle_steps": None}},
-            {"name": "place_on_support", "state": {"prev_eef_distance": None}},
+            {
+                "name": "move_to_radio",
+                "objects": self._stage_objects.get("move_to_radio", []),
+                "state": {"prev_distance": None},
+            },
+            {
+                "name": "pickup_from_support",
+                "objects": self._stage_objects.get("pickup_from_support", []),
+                "state": {"prev_eef_distance": None},
+            },
+            {
+                "name": "press_radio",
+                "objects": self._stage_objects.get("press_radio", []),
+                "state": {"prev_distance": None, "prev_toggle_steps": None},
+            },
+            {
+                "name": "place_on_support",
+                "objects": self._stage_objects.get("place_on_support", []),
+                "state": {"prev_eef_distance": None},
+            },
         ]
 
     def _evaluate_stage(self, stage, task, env, action):
-        if self._target_obj is None or self._toggle_state is None:
+        if self._radio_obj is None or self._toggle_state is None:
             return {"reward": 0.0, "completed": False, "metrics": {"missing_target": True}}
 
         robot = env.robots[0]
@@ -90,7 +99,7 @@ class TurningOnRadioReward(SequentialTaskReward):
         toggled_on = bool(self._toggle_state.get_value())
 
         if stage_name == "move_to_radio":
-            distance = get_min_eef_distance_to_obj(robot, self._target_obj)
+            distance = get_min_eef_distance_to_obj(robot, self._radio_obj)
             progress_reward = self._progress_reward(
                 stage_state["prev_distance"], distance, self.move_to_progress_scale, invert=True
             )
@@ -107,10 +116,10 @@ class TurningOnRadioReward(SequentialTaskReward):
             }
 
         if stage_name == "pickup_from_support":
-            distance = get_min_eef_distance_to_obj(robot, self._target_obj)
-            in_hand = is_target_in_hand(robot, self._target_obj)
+            distance = get_min_eef_distance_to_obj(robot, self._radio_obj)
+            in_hand = is_target_in_hand(robot, self._radio_obj)
             on_support = is_supported_by_surface(
-                self._target_obj,
+                self._radio_obj,
                 self._support_obj,
             )
             self._has_left_support = self._has_left_support or (not on_support)
@@ -134,7 +143,7 @@ class TurningOnRadioReward(SequentialTaskReward):
             }
 
         if stage_name == "press_radio":
-            adjusted_distance = get_min_eef_distance_to_toggle(robot, self._target_obj, self._toggle_state)
+            adjusted_distance = get_min_eef_distance_to_toggle(robot, self._radio_obj, self._toggle_state)
             # `robot_can_toggle_steps` comes from the ToggledOn state and counts how many consecutive
             # simulator updates the robot's fingers are in valid toggle contact with the button area.
             toggle_steps = int(self._toggle_state.robot_can_toggle_steps)
@@ -160,10 +169,10 @@ class TurningOnRadioReward(SequentialTaskReward):
             }
 
         if stage_name == "place_on_support":
-            distance = get_min_eef_distance_to_obj(robot, self._target_obj)
-            in_hand = is_target_in_hand(robot, self._target_obj)
+            distance = get_min_eef_distance_to_obj(robot, self._radio_obj)
+            in_hand = is_target_in_hand(robot, self._radio_obj)
             on_support = is_supported_by_surface(
-                self._target_obj,
+                self._radio_obj,
                 self._support_obj,
             )
             progress_reward = self._progress_reward(
