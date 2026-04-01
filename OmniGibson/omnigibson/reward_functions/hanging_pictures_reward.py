@@ -8,7 +8,9 @@ from omnigibson.reward_functions.sequential_task_reward import SequentialTaskRew
 from omnigibson.reward_functions.support_utils import (
     find_task_object,
     find_support_object,
+    get_attachment_alignment_errors,
     get_min_eef_distance_to_obj,
+    is_attached_to_target,
     is_supported_by_surface,
     is_target_in_hand,
     parse_support_label_from_annotation,
@@ -153,7 +155,9 @@ class HangingPicturesReward(SequentialTaskReward):
             }
 
         if stage_name == "move_to_wall_nail":
-            attach_distance, attach_orientation, has_candidate = self._get_attachment_alignment_errors()
+            attach_distance, attach_orientation, has_candidate = get_attachment_alignment_errors(
+                self._poster_obj, self._wall_nail_obj
+            )
             distance = attach_distance if has_candidate else get_min_eef_distance_to_obj(robot, self._wall_nail_obj)
             progress_reward = self._progress_reward(
                 stage_state["prev_distance"], distance, self.move_to_hang_progress_scale, invert=True
@@ -173,9 +177,11 @@ class HangingPicturesReward(SequentialTaskReward):
             }
 
         if stage_name == "hang_on_wall_nail":
-            attach_distance, attach_orientation, has_candidate = self._get_attachment_alignment_errors()
+            attach_distance, attach_orientation, has_candidate = get_attachment_alignment_errors(
+                self._poster_obj, self._wall_nail_obj
+            )
             eef_distance = get_min_eef_distance_to_obj(robot, self._poster_obj)
-            attached = self._is_attached_to_target()
+            attached = is_attached_to_target(self._poster_obj, self._wall_nail_obj)
             in_hand = is_target_in_hand(robot, self._poster_obj) or (
                 eef_distance <= self.inhand_infer_distance_threshold
             )
@@ -218,46 +224,3 @@ class HangingPicturesReward(SequentialTaskReward):
             }
 
         return {"reward": 0.0, "completed": False, "metrics": {}}
-
-
-    def _is_attached_to_target(self):
-        if self._poster_obj is None or self._wall_nail_obj is None or AttachedTo not in self._poster_obj.states:
-            return False
-        try:
-            return bool(self._poster_obj.states[AttachedTo].get_value(self._wall_nail_obj))
-        except (AttributeError, RuntimeError, TypeError, ValueError) as exc:
-            _warn_exception(
-                "Target pose lookup for attachment matching",
-                exc,
-                "Skipping attachment matching.",
-            )
-
-    def _get_attachment_alignment_errors(self):
-        if self._poster_obj is None or self._wall_nail_obj is None or AttachedTo not in self._poster_obj.states:
-            return float("inf"), math.pi, False
-
-        try:
-            candidates = self._poster_obj.states[AttachedTo]._get_parent_candidates(self._wall_nail_obj)
-        except Exception:
-            candidates = None
-
-        if not candidates:
-            return float("inf"), math.pi, False
-
-        best_distance = float("inf")
-        best_orientation = math.pi
-        has_candidate = False
-        for child_link_name, parent_link_names in candidates.items():
-            child_link = self._poster_obj.states[AttachedTo].links[child_link_name]
-            child_pos, child_quat = child_link.get_position_orientation()
-            for parent_link_name in parent_link_names:
-                parent_link = self._wall_nail_obj.states[AttachedTo].links[parent_link_name]
-                parent_pos, parent_quat = parent_link.get_position_orientation()
-                pos_diff = th.norm(child_pos - parent_pos).item()
-                orn_diff = float(T.get_orientation_diff_in_radian(child_quat, parent_quat))
-                if pos_diff < best_distance or (math.isclose(pos_diff, best_distance) and orn_diff < best_orientation):
-                    best_distance = pos_diff
-                    best_orientation = orn_diff
-                    has_candidate = True
-
-        return best_distance, best_orientation, has_candidate
