@@ -346,33 +346,36 @@ def resolve_subtask_frame_range(demo_data_dir, task_index, episode_index, subtas
 
 
 def sync_task_reward_annotation_for_episode(task, demo_data_dir, task_index, episode_index, logger=None):
-    annotation_path = resolve_demo_annotation_path(
+    orchestrator_annotation_path = resolve_demo_annotation_path(
         demo_data_dir=demo_data_dir,
         task_index=task_index,
         episode_index=episode_index,
     )
     reward_function = getattr(task, "_reward_functions", {}).get("task_specific", None)
-    if reward_function is None or not hasattr(reward_function, "annotation_path"):
+    if reward_function is None or not hasattr(reward_function, "orchestrator_annotation_path"):
         return None
 
     task_reward_kwargs = task._reward_config.get("task_specific_reward_kwargs", {})
-    reward_function.annotation_path = annotation_path
-    if annotation_path is None:
-        task_reward_kwargs.pop("annotation_path", None)
+    reward_function.orchestrator_annotation_path = orchestrator_annotation_path
+    if orchestrator_annotation_path is None:
+        task_reward_kwargs.pop("orchestrator_annotation_path", None)
     else:
-        task_reward_kwargs["annotation_path"] = annotation_path
+        task_reward_kwargs["orchestrator_annotation_path"] = orchestrator_annotation_path
 
     active_logger = logger or logging.getLogger(__name__)
-    if annotation_path is not None:
-        active_logger.info("Using task reward annotation for current episode: %s", annotation_path)
+    if orchestrator_annotation_path is not None:
+        active_logger.info(
+            "Using task reward orchestrator annotation for current episode: %s",
+            orchestrator_annotation_path,
+        )
     else:
         missing_path = get_demo_annotation_path(
             demo_data_dir=demo_data_dir,
             task_index=task_index,
             episode_index=episode_index,
         )
-        active_logger.warning("Task reward annotation not found for current episode: %s", missing_path)
-    return annotation_path
+        active_logger.warning("Task reward orchestrator annotation not found for current episode: %s", missing_path)
+    return orchestrator_annotation_path
 
 
 def extract_sequential_reward_info(info: Dict) -> Dict:

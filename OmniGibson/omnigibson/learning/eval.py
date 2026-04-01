@@ -146,21 +146,21 @@ class Evaluator:
             demo_expert_data_dir = self.cfg.demo_expert_data_dir
             demo_expert_episode_index = self.cfg.demo_expert_episode_index
             if demo_expert_data_dir is not None and demo_expert_episode_index is not None:
-                annotation_path = resolve_demo_annotation_path(
+                orchestrator_annotation_path = resolve_demo_annotation_path(
                     demo_data_dir=demo_expert_data_dir,
                     task_index=task_idx,
                     episode_index=demo_expert_episode_index,
                 )
-                if annotation_path is not None:
-                    task_reward_kwargs["annotation_path"] = annotation_path
-                    logger.info("Using task reward annotation: %s", annotation_path)
+                if orchestrator_annotation_path is not None:
+                    task_reward_kwargs["orchestrator_annotation_path"] = orchestrator_annotation_path
+                    logger.info("Using task reward orchestrator annotation: %s", orchestrator_annotation_path)
                 else:
-                    annotation_path = get_demo_annotation_path(
+                    orchestrator_annotation_path = get_demo_annotation_path(
                         demo_data_dir=demo_expert_data_dir,
                         task_index=task_idx,
                         episode_index=demo_expert_episode_index,
                     )
-                    logger.warning("Task reward annotation not found: %s", annotation_path)
+                    logger.warning("Task reward orchestrator annotation not found: %s", orchestrator_annotation_path)
 
             cfg["task"]["reward_config"]["task_specific_reward_name"] = task_name
             cfg["task"]["reward_config"]["task_specific_reward_kwargs"] = task_reward_kwargs

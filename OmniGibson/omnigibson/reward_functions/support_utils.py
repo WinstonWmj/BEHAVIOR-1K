@@ -1,4 +1,5 @@
 import json
+import os
 import re
 
 import torch as th
@@ -12,157 +13,181 @@ from omnigibson.utils.ui_utils import create_module_logger
 log = create_module_logger(module_name=__name__)
 
 
-def find_task_object(task, preferred_label=None, preferred_category=None, required_state=None):
-    normalized_label = _normalize_text(preferred_label) if preferred_label else None
-    label_tokens = [tok for tok in (normalized_label or "").split() if tok]
-    best_obj = None
-    best_score = -1
+def _iter_annotation_names(values):
+    if isinstance(values, str):
+        yield values
+    elif isinstance(values, dict):
+        for value in values.values():
+            yield from _iter_annotation_names(value)
+    elif isinstance(values, (list, tuple, set)):
+        for value in values:
+            yield from _iter_annotation_names(value)
 
-    for scope_name, obj in task.object_scope.items():
+
+def find_object_by_name(env, object_name, required_state=None):
+    normalized_name = _normalize_text(object_name)
+    if not normalized_name:
+        return None
+
+    for obj in getattr(getattr(env, "scene", None), "objects", []):
         if obj is None or getattr(obj, "synset", None) == "agent":
             continue
         if required_state is not None and (not hasattr(obj, "states") or required_state not in obj.states):
             continue
 
-        candidate_text = " ".join(
-            _normalize_text(field)
-            for field in (
-                scope_name,
-                getattr(obj, "name", ""),
-                getattr(obj, "category", ""),
-                getattr(obj, "model", ""),
-                getattr(obj, "synset", ""),
-            )
-            if field
-        )
-        score = 1 if required_state is not None else 0
-        if preferred_category and preferred_category in candidate_text:
-            score += 3
-        if normalized_label:
-            if normalized_label in candidate_text:
-                score += 3
-            score += sum(token in candidate_text for token in label_tokens)
-
-        if score > best_score:
-            best_score = score
-            best_obj = obj
-
-    return best_obj if best_score > 0 else None
-
-
-def parse_support_label_from_annotation(annotation_path):
-    if annotation_path is None:
-        return None
-
-    try:
-        with open(annotation_path, "r") as f:
-            data = json.load(f)
-    except (OSError, json.JSONDecodeError) as exc:
-        _warn_exception("Annotation file read", exc, "Falling back to runtime support discovery.")
-        return None
-
-    for subtask_text in data.get("cot_subtask_description_list", []):
-        lowered = str(subtask_text).lower().strip()
-        match = re.search(r"(?:pick up|pickup|place)\s+.+?\s+(?:from|on)\s+(.+)", lowered)
-        if match:
-            return match.group(1).strip()
+        if normalized_name in {
+            _normalize_text(getattr(obj, "name", "")),
+            _normalize_text(getattr(obj, "prim_path", "").rsplit("/", 1)[-1]),
+        }:
+            return obj
 
     return None
 
 
-def find_support_object(task, env, target_obj, support_label=None):
-    if target_obj is None:
-        return None
+def load_stage_annotations(orchestrator_annotation_path):
+    orchestrator_dir = _get_orchestrator_annotation_dir(orchestrator_annotation_path)
+    if orchestrator_dir is None or not os.path.isdir(orchestrator_dir):
+        return []
 
-    if support_label is not None:
-        target_xy = None
+    stage_annotations = []
+    for filename in sorted(os.listdir(orchestrator_dir)):
+        if not (filename.startswith("subtask_") and filename.endswith("_annotated.json")):
+            continue
+        annotation_file = os.path.join(orchestrator_dir, filename)
         try:
-            target_xy = get_obj_center(target_obj)[:2]
-        except (AttributeError, RuntimeError, TypeError, ValueError) as exc:
+            with open(annotation_file, "r") as f:
+                stage_annotations.append(json.load(f))
+        except (OSError, TypeError, ValueError) as exc:
             _warn_exception(
-                "Target pose lookup for support matching",
+                f"Stage annotation load for {annotation_file}",
                 exc,
-                "Skipping XY tie-breaking for support matching.",
+                "Skipping this stage annotation file.",
             )
+    return stage_annotations
 
-        normalized_label = _normalize_text(support_label)
-        label_tokens = [tok for tok in normalized_label.split() if tok]
-        for candidates in _iter_support_candidate_groups(task, env):
-            best_obj = None
-            best_score = -1
-            best_xy_distance = float("inf")
-            for scope_name, obj in candidates:
-                if _should_skip_candidate(obj, target_obj):
-                    continue
 
-                candidate_text = " ".join(
-                    _normalize_text(field)
-                    for field in (
-                        scope_name,
-                        getattr(obj, "name", ""),
-                        getattr(obj, "category", ""),
-                        getattr(obj, "model", ""),
-                        getattr(obj, "synset", ""),
-                    )
-                    if field
-                )
-                score = sum(token in candidate_text for token in label_tokens)
-                if normalized_label and normalized_label in candidate_text:
-                    score += 2
+def get_stage_objects(env, orchestrator_annotation_path, stage_index, required_state=None):
+    stage_annotations = load_stage_annotations(orchestrator_annotation_path)
+    if stage_index < 0 or stage_index >= len(stage_annotations):
+        return []
 
-                xy_distance = float("inf")
-                if target_xy is not None:
-                    try:
-                        xy_distance = float(th.norm(get_obj_center(obj)[:2] - target_xy).item())
-                    except (AttributeError, RuntimeError, TypeError, ValueError) as exc:
-                        _warn_exception(
-                            "Candidate pose lookup for support ranking",
-                            exc,
-                            "Using infinite XY distance for this support candidate.",
-                        )
+    object_names = list(_iter_annotation_names(stage_annotations[stage_index].get("object_id", [])))
+    stage_objects = []
+    for object_name in object_names:
+        obj = find_object_by_name(env, object_name, required_state=required_state)
+        stage_objects.append(obj)
+    return stage_objects
 
-                if score > best_score or (score == best_score and xy_distance < best_xy_distance):
-                    best_obj = obj
-                    best_score = score
-                    best_xy_distance = xy_distance
 
-            if best_score > 0:
-                return best_obj
+def _get_orchestrator_annotation_dir(orchestrator_annotation_path):
+    if not orchestrator_annotation_path:
+        return None
 
-    for candidates, context in (
-        (task.object_scope.values(), "task-scope"),
-        (getattr(getattr(env, "scene", None), "objects", []), "scene"),
-    ):
-        for obj in candidates:
-            if _should_skip_candidate(obj, target_obj):
-                continue
-            try:
-                if OnTop in target_obj.states and target_obj.states[OnTop].get_value(obj):
-                    return obj
-            except (AttributeError, KeyError, RuntimeError, TypeError, ValueError) as exc:
-                _warn_exception(
-                    f"OnTop query for {context} support candidate",
-                    exc,
-                    "Skipping this support candidate.",
-                )
+    normalized_path = os.path.normpath(orchestrator_annotation_path)
+    parts = normalized_path.split(os.sep)
+    try:
+        annotations_index = parts.index("annotations")
+    except ValueError:
+        return None
 
-    return None
+    if len(parts) < annotations_index + 3:
+        return None
+
+    episode_filename = parts[-1]
+    episode_name, ext = os.path.splitext(episode_filename)
+    if ext != ".json":
+        return None
+
+    orchestrator_parts = list(parts[:])
+    orchestrator_parts[annotations_index] = "orchestrators"
+    orchestrator_parts[-1] = episode_name
+    return os.sep.join(orchestrator_parts)
 
 
 def _warn_exception(context, exc, fallback_message):
+    """
+    Log a warning when an exception occurs during object search operations.
+    
+    This helper provides consistent warning messages across the module, helping
+    with debugging while allowing the search to continue gracefully.
+    
+    Args:
+        context: Description of what operation failed (e.g., "OnTop query for task-scope")
+        exc: The exception that was caught
+        fallback_message: What the code will do instead (e.g., "Skipping this candidate")
+    
+    Example:
+        try:
+            result = obj.states[OnTop].get_value(support)
+        except RuntimeError as e:
+            _warn_exception("OnTop state query", e, "Falling back to heuristics")
+    """
     log.warning(f"[RewardSupport] {context} failed with {type(exc).__name__}. {fallback_message}")
 
 
+def _normalize_text(text):
+    """
+    Normalize text for fuzzy matching by converting to lowercase and removing special characters.
+    
+    This function:
+    1. Converts text to lowercase
+    2. Replaces all non-alphanumeric characters with spaces
+    3. Strips leading/trailing whitespace
+    
+    Args:
+        text: Input text to normalize
+    
+    Returns:
+        Normalized text string suitable for fuzzy matching
+    
+    Examples:
+        _normalize_text("Wall-Nail_01") -> "wall nail 01"
+        _normalize_text("Poster.v2") -> "poster v2"
+    """
+    return re.sub(r"[^a-z0-9]+", " ", str(text).lower()).strip()
+
+
 def get_obj_center(obj):
+    """
+    Get the 3D position of an object's center.
+    
+    Args:
+        obj: Object to get position from
+    
+    Returns:
+        3D position vector (x, y, z) as torch tensor
+    """
     return obj.get_position_orientation()[0]
 
 
 def get_min_eef_distance_to_obj(robot, obj):
+    """
+    Calculate the minimum distance from any of the robot's end-effectors to an object.
+    
+    This function checks all available robot arms and returns the shortest distance
+    from any end-effector to the object's center. Useful for determining if the
+    robot is close enough to interact with an object.
+    
+    Args:
+        robot: Robot instance with arm_names and get_eef_position methods
+        obj: Target object to measure distance to
+    
+    Returns:
+        Minimum distance in meters (float). Returns inf if obj is None or no valid
+        end-effector positions could be obtained.
+    
+    Example:
+        distance = get_min_eef_distance_to_obj(robot, poster)
+        if distance < 0.3:
+            print("Robot is close enough to grasp")
+    """
     if obj is None:
         return float("inf")
 
     obj_pos = get_obj_center(obj)
     dists = []
+    
+    # Check all robot arms
     for arm in getattr(robot, "arm_names", []):
         try:
             eef_pos = robot.get_eef_position(arm)
@@ -175,6 +200,7 @@ def get_min_eef_distance_to_obj(robot, obj):
             continue
         dists.append(th.norm(eef_pos - obj_pos).item())
 
+    # Fallback to default arm if no valid distances
     if not dists:
         default_arm = getattr(robot, "default_arm", None)
         if default_arm is not None:
@@ -185,9 +211,34 @@ def get_min_eef_distance_to_obj(robot, obj):
 
 
 def get_min_eef_distance_to_toggle(robot, target_obj, toggle_state):
+    """
+    Calculate the minimum distance from any end-effector to a toggle button/switch.
+    
+    This function is specialized for toggle interactions (buttons, switches). It accounts
+    for the visual marker's position and radius, providing a more accurate distance
+    measurement for toggle operations than simple object center distance.
+    
+    The distance is adjusted by subtracting the marker radius, so a distance of 0 means
+    the end-effector is touching the edge of the toggle marker.
+    
+    Args:
+        robot: Robot instance with arm_names and get_eef_position methods
+        target_obj: Object with toggle capability
+        toggle_state: ToggledOn state instance with optional visual_marker
+    
+    Returns:
+        Adjusted minimum distance in meters (float). Returns inf if target_obj is None.
+        Distance is clamped to 0 minimum (never negative).
+    
+    Example:
+        distance = get_min_eef_distance_to_toggle(robot, radio, radio.states[ToggledOn])
+        if distance < 0.05:
+            print("Close enough to press button")
+    """
     if target_obj is None:
         return float("inf")
 
+    # Use visual marker position if available, otherwise use object center
     if toggle_state is None or toggle_state.visual_marker is None:
         toggle_pos = get_obj_center(target_obj)
         marker_radius = 0.0
@@ -196,6 +247,8 @@ def get_min_eef_distance_to_toggle(robot, target_obj, toggle_state):
         marker_radius = th.min(toggle_state.visual_marker.extent * toggle_state.scale).item()
 
     dists = []
+    
+    # Check all robot arms
     for arm in getattr(robot, "arm_names", []):
         try:
             eef_pos = robot.get_eef_position(arm)
@@ -208,12 +261,14 @@ def get_min_eef_distance_to_toggle(robot, target_obj, toggle_state):
             continue
         dists.append(th.norm(eef_pos - toggle_pos).item())
 
+    # Fallback to default arm if no valid distances
     if not dists:
         default_arm = getattr(robot, "default_arm", None)
         if default_arm is not None:
             eef_pos = robot.get_eef_position(default_arm)
             dists.append(th.norm(eef_pos - toggle_pos).item())
 
+    # Adjust distance by marker radius and clamp to 0
     raw_distance = min(dists) if dists else float("inf")
     return max(raw_distance - marker_radius, 0.0)
 
@@ -245,6 +300,34 @@ def is_target_in_hand(robot, target_obj):
 
 
 def is_same_object(obj_a, obj_b):
+    """
+    Check if two object references represent the same physical object.
+    
+    This function is more robust than direct reference equality (obj_a == obj_b) because
+    it handles cases where object references may be refreshed/reloaded during simulation
+    or when replaying ground truth data. It checks multiple attributes to determine identity.
+    
+    Comparison strategy:
+    1. Check if both are None -> False
+    2. Check reference equality (obj_a is obj_b) -> True
+    3. Check if prim_path, name, or uuid match -> True
+    4. Otherwise -> False
+    
+    Args:
+        obj_a: First object to compare
+        obj_b: Second object to compare
+    
+    Returns:
+        True if objects represent the same entity, False otherwise
+    
+    Example:
+        # After reloading a scene, object references change but represent same entity
+        old_poster = scene.objects[0]
+        scene.reload()
+        new_poster = scene.objects[0]
+        is_same_object(old_poster, new_poster)  # True (same prim_path/name/uuid)
+        old_poster is new_poster  # False (different Python objects)
+    """
     if obj_a is None or obj_b is None:
         return False
     if obj_a is obj_b:
@@ -258,15 +341,39 @@ def is_same_object(obj_a, obj_b):
 
 
 def is_supported_by_surface(target_obj, support_obj):
+    """
+    Check if target object is physically supported by (resting on) the support object.
+    
+    This function uses a multi-layered approach:
+    1. Primary check: OnTop state (most reliable)
+    2. Fallback: Touching + VerticalAdjacency heuristics
+    
+    The fallback requires BOTH conditions:
+    - Target is touching the support
+    - Support is vertically below the target (in negative_neighbors)
+    
+    Args:
+        target_obj: Object that should be supported (e.g., poster, radio)
+        support_obj: Object that should be providing support (e.g., table, shelf)
+    
+    Returns:
+        True if target is supported by support_obj, False otherwise
+    
+    Example:
+        if is_supported_by_surface(poster, table):
+            print("Poster is resting on the table")
+    """
     if target_obj is None or support_obj is None:
         return False
 
+    # Primary check: OnTop state
     try:
         if OnTop in target_obj.states and target_obj.states[OnTop].get_value(support_obj):
             return True
     except (AttributeError, KeyError, RuntimeError, TypeError, ValueError) as exc:
         _warn_exception("OnTop state query", exc, "Falling back to support-contact heuristics.")
 
+    # Fallback: Check if touching
     try:
         touching_support = Touching in target_obj.states and target_obj.states[Touching].get_value(support_obj)
     except (AttributeError, KeyError, RuntimeError, TypeError, ValueError) as exc:
@@ -277,6 +384,7 @@ def is_supported_by_surface(target_obj, support_obj):
         )
         touching_support = False
 
+    # Fallback: Check if support is below target
     try:
         if VerticalAdjacency in target_obj.states:
             adjacency = target_obj.states[VerticalAdjacency].get_value()
@@ -292,6 +400,7 @@ def is_supported_by_surface(target_obj, support_obj):
         )
         support_below_target = False
 
+    # Require both touching AND below for fallback support detection
     if not support_below_target:
         return False
     return touching_support
@@ -314,7 +423,8 @@ def is_attached_to_target(child_obj, parent_obj):
         bool: True if child_obj is attached to parent_obj, False otherwise
     """
     from omnigibson.object_states.attached_to import AttachedTo
-    
+    res = bool(child_obj.states[AttachedTo].get_value(parent_obj))
+    print(f"DEBUG: is_attached_to_target result = {res}")
     if child_obj is None or parent_obj is None or AttachedTo not in child_obj.states:
         return False
     
@@ -400,19 +510,3 @@ def get_attachment_alignment_errors(child_obj, parent_obj):
                 has_candidate = True
 
     return best_distance, best_orientation, has_candidate
-
-
-def _iter_support_candidate_groups(task, env):
-    yield task.object_scope.items()
-    yield (
-        (getattr(obj, "name", f"scene_obj_{idx}"), obj)
-        for idx, obj in enumerate(getattr(getattr(env, "scene", None), "objects", []))
-    )
-
-
-def _should_skip_candidate(obj, target_obj):
-    return obj is None or is_same_object(obj, target_obj) or getattr(obj, "synset", None) == "agent"
-
-
-def _normalize_text(text):
-    return re.sub(r"[^a-z0-9]+", " ", str(text).lower()).strip()

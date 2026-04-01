@@ -6,14 +6,12 @@ import omnigibson.utils.transform_utils as T
 from omnigibson.object_states.attached_to import AttachedTo
 from omnigibson.reward_functions.sequential_task_reward import SequentialTaskReward
 from omnigibson.reward_functions.support_utils import (
-    find_task_object,
-    find_support_object,
+    get_stage_objects,
     get_attachment_alignment_errors,
     get_min_eef_distance_to_obj,
     is_attached_to_target,
     is_supported_by_surface,
     is_target_in_hand,
-    parse_support_label_from_annotation,
 )
 
 
@@ -38,7 +36,7 @@ class HangingPicturesReward(SequentialTaskReward):
         hang_grasp_dense_scale=0.1,
         hang_success_reward=5.0,
         stage_completion_bonus=1.0,
-        annotation_path=None,
+        orchestrator_annotation_path=None,
     ):
         self.move_to_success_threshold = move_to_success_threshold
         self.move_to_progress_scale = move_to_progress_scale
@@ -55,30 +53,26 @@ class HangingPicturesReward(SequentialTaskReward):
         self.hang_orientation_dense_scale = hang_orientation_dense_scale
         self.hang_grasp_dense_scale = hang_grasp_dense_scale
         self.hang_success_reward = hang_success_reward
-        self.annotation_path = annotation_path
+        self.orchestrator_annotation_path = orchestrator_annotation_path
 
         self._poster_obj = None
         self._support_obj = None
         self._wall_nail_obj = None
-        self._support_label = None
+        self._stage_objects = {}
         self._has_left_support = False
         self._has_picked_up = False
         super().__init__(stage_completion_bonus=stage_completion_bonus)
 
     def reset(self, task, env):
-        self._poster_obj = find_task_object(task, preferred_label="poster", preferred_category="poster")
-        self._support_label = parse_support_label_from_annotation(self.annotation_path)
-        self._support_obj = find_support_object(
-            task=task,
-            env=env,
-            target_obj=self._poster_obj,
-            support_label=self._support_label,
-        )
-        self._wall_nail_obj = find_task_object(
-            task,
-            preferred_label="wall_nail",
-            preferred_category="wall_nail",
-        )
+        self._stage_objects = {
+            "move_to_poster": get_stage_objects(env, self.orchestrator_annotation_path, 0),
+            "pickup_from_bar": get_stage_objects(env, self.orchestrator_annotation_path, 1),
+            "move_to_wall_nail": get_stage_objects(env, self.orchestrator_annotation_path, 2),
+            "hang_on_wall_nail": get_stage_objects(env, self.orchestrator_annotation_path, 3),
+        }
+        self._poster_obj = self._stage_objects["move_to_poster"][0] if self._stage_objects["move_to_poster"] else None
+        self._support_obj = self._stage_objects["pickup_from_bar"][1] if len(self._stage_objects["pickup_from_bar"]) > 1 else None
+        self._wall_nail_obj = self._stage_objects["move_to_wall_nail"][0] if self._stage_objects["move_to_wall_nail"] else None
         self._has_left_support = False
         self._has_picked_up = False
         super().reset(task, env)
@@ -88,11 +82,24 @@ class HangingPicturesReward(SequentialTaskReward):
             return [{"name": "missing_target"}]
 
         return [
-            {"name": "move_to_poster", "state": {"prev_distance": None}},
-            {"name": "pickup_from_bar", "state": {"prev_eef_distance": None}},
-            {"name": "move_to_wall_nail", "state": {"prev_distance": None}},
+            {
+                "name": "move_to_poster",
+                "objects": self._stage_objects.get("move_to_poster", []),
+                "state": {"prev_distance": None},
+            },
+            {
+                "name": "pickup_from_bar",
+                "objects": self._stage_objects.get("pickup_from_bar", []),
+                "state": {"prev_eef_distance": None},
+            },
+            {
+                "name": "move_to_wall_nail",
+                "objects": self._stage_objects.get("move_to_wall_nail", []),
+                "state": {"prev_distance": None},
+            },
             {
                 "name": "hang_on_wall_nail",
+                "objects": self._stage_objects.get("hang_on_wall_nail", []),
                 "state": {
                     "prev_attach_distance": None,
                     "prev_attach_orientation": None,
