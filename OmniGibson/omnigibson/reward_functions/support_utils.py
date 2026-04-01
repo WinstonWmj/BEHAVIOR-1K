@@ -149,6 +149,10 @@ def find_support_object(task, env, target_obj, support_label=None):
     return None
 
 
+def _warn_exception(context, exc, fallback_message):
+    log.warning(f"[RewardSupport] {context} failed with {type(exc).__name__}. {fallback_message}")
+
+
 def get_obj_center(obj):
     return obj.get_position_orientation()[0]
 
@@ -293,8 +297,109 @@ def is_supported_by_surface(target_obj, support_obj):
     return touching_support
 
 
-def _warn_exception(context, exc, fallback_message):
-    log.warning(f"[RewardSupport] {context} failed with {type(exc).__name__}. {fallback_message}")
+def is_attached_to_target(child_obj, parent_obj):
+    """
+    Check if child_obj is attached to parent_obj using the AttachedTo state.
+    
+    This function uses is_same_object() for comparison instead of direct object reference
+    equality (==), which is important when replaying ground truth data or when object
+    references may be refreshed/reloaded during simulation. Direct reference comparison
+    can fail even when the objects represent the same entity in the scene.
+    
+    Args:
+        child_obj: The object that should be attached (e.g., poster)
+        parent_obj: The object that should be the attachment target (e.g., wall_nail)
+    
+    Returns:
+        bool: True if child_obj is attached to parent_obj, False otherwise
+    """
+    from omnigibson.object_states.attached_to import AttachedTo
+    
+    if child_obj is None or parent_obj is None or AttachedTo not in child_obj.states:
+        return False
+    
+    try:
+        attached_state = child_obj.states[AttachedTo]
+        current_parent = attached_state.parent
+        
+        # Use is_same_object for robust comparison across object reference changes
+        return current_parent is not None and is_same_object(current_parent, parent_obj)
+    except (AttributeError, RuntimeError, TypeError, ValueError) as exc:
+        _warn_exception(
+            "AttachedTo state query",
+            exc,
+            "Skipping attachment check.",
+        )
+        return False
+
+
+def get_attachment_alignment_errors(child_obj, parent_obj):
+    """
+    Calculate the position and orientation alignment errors between attachment candidates.
+    
+    This function finds all potential attachment link pairs between child and parent objects
+    (based on their meta link types), then computes the minimum position distance and 
+    orientation difference across all valid pairs. This is useful for:
+    - Providing dense reward signals during attachment approach
+    - Debugging why attachments fail (check if alignment thresholds are met)
+    - Monitoring attachment progress in multi-stage tasks
+    
+    The function looks for male meta links (ending with "M") on the child object and 
+    matching female meta links (ending with "F") on the parent object. For each valid
+    pair, it computes spatial alignment and returns the best (minimum) errors found.
+    
+    Args:
+        child_obj: The object to be attached (e.g., poster with male meta links)
+        parent_obj: The target attachment object (e.g., wall_nail with female meta links)
+    
+    Returns:
+        tuple: (best_distance, best_orientation, has_candidate)
+            - best_distance (float): Minimum position distance in meters between any 
+              candidate link pair. Returns inf if no candidates found.
+            - best_orientation (float): Minimum orientation difference in radians between
+              any candidate link pair. Returns pi if no candidates found.
+            - has_candidate (bool): True if at least one valid attachment candidate pair
+              was found, False otherwise.
+    """
+    import math
+    from omnigibson.object_states.attached_to import AttachedTo
+    import omnigibson.utils.transform_utils as T
+    
+    if child_obj is None or parent_obj is None or AttachedTo not in child_obj.states:
+        return float("inf"), math.pi, False
+
+    try:
+        candidates = child_obj.states[AttachedTo]._get_parent_candidates(parent_obj)
+    except Exception:
+        candidates = None
+
+    if not candidates:
+        return float("inf"), math.pi, False
+
+    best_distance = float("inf")
+    best_orientation = math.pi
+    has_candidate = False
+    
+    # Iterate through all candidate attachment link pairs
+    for child_link_name, parent_link_names in candidates.items():
+        child_link = child_obj.states[AttachedTo].links[child_link_name]
+        child_pos, child_quat = child_link.get_position_orientation()
+        
+        for parent_link_name in parent_link_names:
+            parent_link = parent_obj.states[AttachedTo].links[parent_link_name]
+            parent_pos, parent_quat = parent_link.get_position_orientation()
+            
+            # Calculate spatial alignment errors
+            pos_diff = th.norm(child_pos - parent_pos).item()
+            orn_diff = float(T.get_orientation_diff_in_radian(child_quat, parent_quat))
+            
+            # Track the best (minimum) alignment errors found
+            if pos_diff < best_distance or (math.isclose(pos_diff, best_distance) and orn_diff < best_orientation):
+                best_distance = pos_diff
+                best_orientation = orn_diff
+                has_candidate = True
+
+    return best_distance, best_orientation, has_candidate
 
 
 def _iter_support_candidate_groups(task, env):
