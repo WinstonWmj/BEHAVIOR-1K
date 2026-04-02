@@ -35,12 +35,11 @@ def _load_eval_utils_helpers():
     spec.loader.exec_module(module)
     return (
         module.TASK_NAMES_TO_INDICES,
-        module.resolve_subtask_frame_range,
-        module.resolve_subtask_index_range,
+        module.load_subtask_frame,
     )
 
 
-TASK_NAMES_TO_INDICES, resolve_subtask_frame_range, resolve_subtask_index_range = _load_eval_utils_helpers()
+TASK_NAMES_TO_INDICES, load_subtask_frame = _load_eval_utils_helpers()
 
 
 def pack_array(obj: Any):
@@ -286,37 +285,41 @@ def main() -> None:
     if resolved_task_index is None and args.task_name is not None:
         resolved_task_index = TASK_NAMES_TO_INDICES[args.task_name]
 
-    resolved_subtask_range = resolve_subtask_index_range(
-        subtask_index=args.subtask_index,
-        subtask_end_index=args.subtask_end_index,
-    )
     resolved_start_frame = args.start_frame
     resolved_end_frame = None
-    if resolved_subtask_range is not None:
-        resolved_subtask_start_idx, resolved_subtask_end_idx = resolved_subtask_range
-        assert resolved_task_index is not None, "Either --task-name or --task-index is required when using --subtask-index."
-        if args.start_frame != 0:
-            logger.info(
-                "Ignoring explicit start_frame=%d because subtask range %d-%d was provided.",
-                args.start_frame,
-                resolved_subtask_start_idx,
-                resolved_subtask_end_idx,
-            )
-        resolved_start_frame, resolved_end_frame = resolve_subtask_frame_range(
-            demo_data_dir=args.demo_data_dir,
-            task_index=resolved_task_index,
-            episode_index=args.episode_index,
-            subtask_index=resolved_subtask_start_idx,
-            subtask_end_index=resolved_subtask_end_idx,
-        )
+    orchestrators_annotation_dir = Path(args.demo_data_dir) / "orchestrators" / f"task-{resolved_task_index:04d}" / f"episode_{args.episode_index:08d}"
+    resolved_subtask_start_idx, resolved_subtask_end_idx = args.subtask_index, args.subtask_end_index
+    assert resolved_task_index is not None, "Either --task-name or --task-index is required when using --subtask-index."
+    if args.start_frame != 0:
         logger.info(
-            "Resolved frame range [%d, %d) from subtask range %d-%d for episode=%d",
-            resolved_start_frame,
-            resolved_end_frame,
+            "Ignoring explicit start_frame=%d because subtask range %d-%d was provided.",
+            args.start_frame,
             resolved_subtask_start_idx,
             resolved_subtask_end_idx,
-            args.episode_index,
         )
+    resolved_start_frame = load_subtask_frame(
+        orchestrators_annotation_dir=orchestrators_annotation_dir,
+        subtask_index=args.subtask_index,
+        is_start_frame=True,
+    )
+    resolved_end_frame = load_subtask_frame(
+        orchestrators_annotation_dir=orchestrators_annotation_dir,
+        subtask_index=args.subtask_end_index,
+        is_start_frame=False,
+    )
+    assert resolved_start_frame < resolved_end_frame, (
+        f"Subtask selection task={resolved_task_index}, episode={args.episode_index}, subtasks=[{args.subtask_index}, {args.subtask_end_index}] "
+        f"has invalid frame range: "
+        f"start_frame={resolved_start_frame}, end_frame={resolved_end_frame}"
+    )
+    logger.info(
+        "Resolved frame range [%d, %d) from subtask range %d-%d for episode=%d",
+        resolved_start_frame,
+        resolved_end_frame,
+        resolved_subtask_start_idx,
+        resolved_subtask_end_idx,
+        args.episode_index,
+    )
     if args.max_steps is not None and resolved_end_frame is not None:
         logger.info(
             "Ignoring resolved end_frame=%d because max_steps=%d was provided.",
