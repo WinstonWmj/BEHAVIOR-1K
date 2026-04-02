@@ -32,6 +32,7 @@ from omnigibson.learning.utils.eval_utils import (
     prime_task_reward_for_subtask,
     load_subtask_frame,
     format_stage_progress_lines,
+    get_instance_to_run,
     TASK_NAMES_TO_INDICES,
 )
 from omnigibson.learning.utils.obs_utils import (
@@ -407,24 +408,7 @@ def _run_subtask_eval(config, logger):
     """Subtask-level evaluation: iterate episodes × subtasks from demo data."""
     task_idx = TASK_NAMES_TO_INDICES[config.task.name]
     assert config.demo_data_dir is not None, "demo_data_dir must be set when eval_level=subtask."
-    # orchestrator_dir = Path(config.demo_data_dir) / "orchestrators" / f"task-{task_idx:04d}"
-    # annotation_path = load_subtask_annotation(
-    #     demo_data_dir=config.demo_data_dir,
-    #     task_index=task_idx,
-    #     episode_index=config.subtask_episode_idx,
-    #     subtask_index=config.subtask_index,
-    # )
-    
-    
-
-    # assert orchestrator_dir.exists(), f"Orchestrator dir not found: {orchestrator_dir}"
-
-    # all_episode_dirs = sorted(
-    #     d for d in orchestrator_dir.iterdir()
-    #     if d.is_dir() and d.name.startswith("episode_")
-    # )
-    # all_episode_indices = [int(d.name.split("_")[1]) for d in all_episode_dirs]
-    episode_index = config.subtask_episode_idx
+    episode_index = config.run_episode_idx
 
     logger.info(
         f"Subtask eval mode: episode={episode_index}, "
@@ -440,9 +424,11 @@ def _run_subtask_eval(config, logger):
 
     summary_results = []
 
+    # set orchestrators annotation directory to get objects for reward functions
     orchestrators_annotation_dir = Path(config.demo_data_dir) / "orchestrators" / f"task-{task_idx:04d}" / f"episode_{episode_index:08d}"
     logger.info(f"Orchestrators annotation directory: {orchestrators_annotation_dir}")
     config["orchestrators_annotation_dir"] = orchestrators_annotation_dir
+    
     with Evaluator(config) as evaluator:
         logger.info("Starting subtask evaluation...")
         instance_id = int((episode_index // 10) % 1e3)
@@ -638,29 +624,23 @@ def _run_instance_eval(config, logger):
     ), "Cannot eval on train instances and test hidden instances simultaneously."
     if config.test_hidden:
         logger.info("You are evaluating on hidden test instances! This is for internal use only.")
-    # get run instances
-    instances_to_run = (
-        config.eval_instance_ids if config.eval_instance_ids is not None else set(range(m.NUM_EVAL_INSTANCES))
-    )
-    assert set(instances_to_run).issubset(
-        set(range(m.NUM_EVAL_INSTANCES))
-    ), f"eval instance ids must be in range({m.NUM_EVAL_INSTANCES})"
-    # load csv file
-    task_instance_csv_path = os.path.join(
-        gm.DATA_PATH, "2025-challenge-task-instances", "metadata", "test_instances.csv"
-    )
-    with open(task_instance_csv_path, "r") as f:
-        lines = list(csv.reader(f))[1:]
-    assert (
-        lines[TASK_NAMES_TO_INDICES[config.task.name]][1] == config.task.name
-    ), f"Task name from config {config.task.name} does not match task name from csv {lines[TASK_NAMES_TO_INDICES[config.task.name]][1]}"
-    test_instances = lines[TASK_NAMES_TO_INDICES[config.task.name]][2].strip().split(",")
-    instances_to_run = [int(test_instances[i]) for i in instances_to_run]
-    # establish metrics
+    
+    instances_to_run = get_instance_to_run(config, m, gm, logger)
+
+    if config.write_video:
+        video_path = Path(config.log_path).expanduser() / "videos"
+        video_path.mkdir(parents=True, exist_ok=True)
     metrics = {}
     metrics_path = Path(config.log_path).expanduser() / "metrics"
     metrics_path.mkdir(parents=True, exist_ok=True)
+    
+    task_idx = TASK_NAMES_TO_INDICES[config.task.name]
 
+    episode_index = config.run_episode_idx
+    orchestrators_annotation_dir = Path(config.demo_data_dir) / "orchestrators" / f"task-{task_idx:04d}" / f"episode_{episode_index:08d}"
+    logger.info(f"Orchestrators annotation directory: {orchestrators_annotation_dir}")
+    config["orchestrators_annotation_dir"] = orchestrators_annotation_dir
+    
     with Evaluator(config) as evaluator:
         logger.info("Starting evaluation...")
 
@@ -687,7 +667,19 @@ def _run_instance_eval(config, logger):
                         evaluator._write_video()
                     if evaluator.env._current_step % 1000 == 0:
                         logger.info(f"Current step: {evaluator.env._current_step}")
-                # run metric end callbacks
+                        logger.info(f"Current reward: {reward}")
+                        logger.info(f"Current info: {info}")
+                        for line in format_stage_progress_lines(info):
+                            logger.info(line)
+
+                if config.write_video and terminated:
+                    for _ in range(3):
+                        obs, _, _, _, _ = evaluator.env.step(
+                            evaluator.robot_action, n_render_iterations=3
+                        )
+                        evaluator.obs = evaluator._preprocess_obs(obs)
+                        evaluator._write_video()
+
                 for metric in evaluator.metrics:
                     metric.end_callback(evaluator.env)
                 logger.info(f"Evaluation finished at step {evaluator.env._current_step}.")
