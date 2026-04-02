@@ -1,10 +1,10 @@
 REPO_ROOT=${REPO_ROOT:-/home/dell/mjwei/BEHAVIOR-1K}
 B1K_DEMO_ROOT=${B1K_DEMO_ROOT:-/home/dell/mjwei/download_models/2025-challenge-demos}
-TASK=${TASK:-hanging_pictures}  # turning_on_radio, hanging_pictures
-DEMO_EPISODE_INDEX=${DEMO_EPISODE_INDEX:-340060}
-SUBTASK_INDEX=${SUBTASK_INDEX:-1}
+TASK=${TASK:-turning_on_radio}  # turning_on_radio, hanging_pictures
+DEMO_EPISODE_INDEX=${DEMO_EPISODE_INDEX:-10}
+SUBTASK_INDEX=${SUBTASK_INDEX:-0}
 SUBTASK_END_INDEX=${SUBTASK_END_INDEX:-3}
-MAX_STEPS=${MAX_STEPS:-2000}
+MAX_STEPS=${MAX_STEPS:-}
 MODEL_HOST=${MODEL_HOST:-0.0.0.0}
 MODEL_PORT=${MODEL_PORT:-8007}
 PYTHON_BIN=${PYTHON_BIN:-python}

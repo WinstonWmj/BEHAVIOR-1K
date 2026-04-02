@@ -1,6 +1,7 @@
 from copy import deepcopy
 import os
 import json
+import csv
 from typing import Dict, List
 import numpy as np
 import torch as th
@@ -492,3 +493,48 @@ def find_start_point(base_vel):
     if len(start_idx) == 0:
         return 0
     return min(start_idx[0], 500)  # Limit to the first 100 points to avoid long initial periods
+
+
+def get_instance_to_run(config, m, gm, logger):
+    # get run instances
+    if config.eval_on_train_instances:
+        logger.info(
+            "You are evaluating on training instances, set eval_on_train_instances to False for test instances."
+        )
+        task_idx = TASK_NAMES_TO_INDICES[config.task.name]
+        with open(os.path.join(gm.DATA_PATH, "2025-challenge-task-instances", "metadata", "episodes.jsonl"), "r") as f:
+            episodes = [json.loads(line) for line in f]
+        instances_to_run = []
+        for episode in episodes:
+            if episode["episode_index"] // 1e4 == task_idx:
+                instances_to_run.append(str(int((episode["episode_index"] // 10) % 1e3)))
+        if config.eval_instance_ids:
+            assert set(config.eval_instance_ids).issubset(
+                set(range(m.NUM_TRAIN_INSTANCES))
+            ), f"eval instance ids must be in range({m.NUM_TRAIN_INSTANCES})"
+            instances_to_run = [instances_to_run[i] for i in config.eval_instance_ids]
+    elif config.test_hidden:
+        instances_to_run = (
+            config.eval_instance_ids if config.eval_instance_ids is not None else set(range(m.NUM_EVAL_INSTANCES))
+        )
+        assert set(instances_to_run).issubset(
+            set(range(m.NUM_EVAL_INSTANCES))
+        ), f"eval instance ids must be in range({m.NUM_EVAL_INSTANCES})"
+    else:
+        instances_to_run = (
+            config.eval_instance_ids if config.eval_instance_ids is not None else set(range(m.NUM_EVAL_INSTANCES))
+        )
+        assert set(instances_to_run).issubset(
+            set(range(m.NUM_EVAL_INSTANCES))
+        ), f"eval instance ids must be in range({m.NUM_EVAL_INSTANCES})"
+        task_instance_csv_path = os.path.join(
+            gm.DATA_PATH, "2025-challenge-task-instances", "metadata", "test_instances.csv"
+        )
+        with open(task_instance_csv_path, "r") as f:
+            lines = list(csv.reader(f))[1:]
+        assert (
+            lines[TASK_NAMES_TO_INDICES[config.task.name]][1] == config.task.name
+        ), f"Task name from config {config.task.name} does not match task name from csv {lines[TASK_NAMES_TO_INDICES[config.task.name]][1]}"
+        test_instances = lines[TASK_NAMES_TO_INDICES[config.task.name]][2].strip().split(",")
+        instances_to_run = [int(test_instances[i]) for i in instances_to_run]
+    return instances_to_run

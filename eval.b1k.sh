@@ -1,20 +1,19 @@
 export CUDA_VISIBLE_DEVICES=0
 
-TASK=hanging_pictures # turning_on_radio, hanging_pictures
-EVAL_LEVEL=${EVAL_LEVEL:-subtask}  # instance or subtask
+TASK=turning_on_radio # turning_on_radio, hanging_pictures
+EVAL_LEVEL=${EVAL_LEVEL:-instance}  # instance or subtask
 POLICY_MODE=${POLICY_MODE:-demo_expert}  # websocket or demo_expert
 MODEL_HOST=${MODEL_HOST:-localhost}
 MODEL_PORT=${MODEL_PORT:-8007}
 B1K_DEMO_ROOT=${B1K_DEMO_ROOT:-/home/dell/mjwei/download_models/2025-challenge-demos}
-DEMO_EPISODE_INDEX=${DEMO_EPISODE_INDEX:-340060}
-SUBTASK_EPISODE_INDICES=${SUBTASK_EPISODE_INDICES:-[${DEMO_EPISODE_INDEX}]}
+RUN_EPISODE_IDX=${RUN_EPISODE_IDX:-10}
 SUBTASK_INDEX=${SUBTASK_INDEX:-1}
 SUBTASK_END_INDEX=${SUBTASK_END_INDEX:-3}
 MAX_STEPS=${MAX_STEPS:-}
 WAITING_FOR_STAGE_COMPLETION=${WAITING_FOR_STAGE_COMPLETION:-true}
 KEEP_RUNNING_AFTER_SUCCESS=${KEEP_RUNNING_AFTER_SUCCESS:-true}
-INSTANCE_IDS=${INSTANCE_IDS:-[2]}  # only used in instance mode
-LOG_BASE=./logs/${EVAL_LEVEL}_eval/hanging_pictures_task_reward/demoexpert-hangingpictures-hastext
+INSTANCE_IDS=${INSTANCE_IDS:-[0]}  # only used in instance mode
+LOG_BASE=./logs/${EVAL_LEVEL}_eval/turning_on_radio_task_reward/demoexpert-turningonradio-hastext-debugstop
 PYTHON_BIN=${PYTHON_BIN:-python}
 
 if ! command -v "${PYTHON_BIN}" >/dev/null 2>&1; then
@@ -50,14 +49,12 @@ COMMON_ARGS=(
   waiting_for_stage_completion=${WAITING_FOR_STAGE_COMPLETION}
   keep_running_after_success=${KEEP_RUNNING_AFTER_SUCCESS}
   env_wrapper._target_=omnigibson.learning.wrappers.RGBWrapper
+  demo_data_dir="${B1K_DEMO_ROOT}"
+  run_episode_idx="${RUN_EPISODE_IDX}"
 )
-
 if [ "${EVAL_LEVEL}" = "subtask" ]; then
-  echo "Subtask episode indices: ${SUBTASK_EPISODE_INDICES}"
-  COMMON_ARGS+=(
-    demo_data_dir="${B1K_DEMO_ROOT}"
-    subtask_episode_indices="${SUBTASK_EPISODE_INDICES}"
-  )
+  echo "Subtask episode indices: ${RUN_EPISODE_IDX}"
+  
   if [ -n "${SUBTASK_INDEX}" ]; then
     COMMON_ARGS+=(
       subtask_index=${SUBTASK_INDEX}
@@ -75,7 +72,7 @@ fi
 
 if [ "${POLICY_MODE}" = "demo_expert" ]; then
   echo "Demo expert parquet root: ${B1K_DEMO_ROOT}"
-  echo "Demo expert episode index: ${DEMO_EPISODE_INDEX}"
+  echo "Demo expert episode index: ${RUN_EPISODE_IDX}"
   "${PYTHON_BIN}" OmniGibson/omnigibson/learning/eval.py \
     "${COMMON_ARGS[@]}" \
     policy=demo_expert \
@@ -83,7 +80,6 @@ if [ "${POLICY_MODE}" = "demo_expert" ]; then
     model.port=${MODEL_PORT} \
     eval_on_train_instances=true \
     demo_expert_data_dir="${B1K_DEMO_ROOT}" \
-    demo_expert_episode_index=${DEMO_EPISODE_INDEX} \
     eval_instance_ids="${INSTANCE_IDS}"
 else
   "${PYTHON_BIN}" OmniGibson/omnigibson/learning/eval.py \

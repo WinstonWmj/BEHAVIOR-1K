@@ -36,7 +36,7 @@ parallel_evaluator_end_idx: 10
 # subtask evaluation from demo data
 demo_data_dir: null  # path to 2025-challenge-demos root, used by subtask eval for orchestrators / annotations / parquet state
 orchestrators_annotation_dir: null  # path to orchestrators annotation directory, used by subtask eval for orchestrators/task-0000/episode_00000010/
-subtask_episode_idx: null  # full episode index to eval in subtask mode, e.g. 10; null = all episodes under the task orchestrator and parquet
+run_episode_idx: null  # full episode index to eval in subtask mode, e.g. 10; null = all episodes under the task orchestrator and parquet
 subtask_index: null  # optional starting subtask index to run within each selected episode, e.g. 1
 subtask_end_index: null  # optional inclusive end index; with subtask_index=1 and subtask_end_index=2 we run subtasks 1 -> 2 sequentially
 subtask_max_steps_multiplier: 3  # max_steps = (end_frame - start_frame) * multiplier
