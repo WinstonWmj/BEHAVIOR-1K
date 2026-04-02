@@ -1,11 +1,8 @@
 import math
 
-import torch as th
-
-import omnigibson.utils.transform_utils as T
-from omnigibson.object_states.attached_to import AttachedTo
 from omnigibson.reward_functions.sequential_task_reward import SequentialTaskReward
 from omnigibson.reward_functions.support_utils import (
+    load_orchestrator_stage_annotations,
     get_stage_objects,
     get_attachment_alignment_errors,
     get_min_eef_distance_to_obj,
@@ -36,7 +33,7 @@ class HangingPicturesReward(SequentialTaskReward):
         hang_grasp_dense_scale=0.1,
         hang_success_reward=5.0,
         stage_completion_bonus=1.0,
-        orchestrator_annotation_path=None,
+        orchestrators_annotation_dir=None,
     ):
         self.move_to_success_threshold = move_to_success_threshold
         self.move_to_progress_scale = move_to_progress_scale
@@ -53,7 +50,7 @@ class HangingPicturesReward(SequentialTaskReward):
         self.hang_orientation_dense_scale = hang_orientation_dense_scale
         self.hang_grasp_dense_scale = hang_grasp_dense_scale
         self.hang_success_reward = hang_success_reward
-        self.orchestrator_annotation_path = orchestrator_annotation_path
+        self.orchestrators_annotation_dir = orchestrators_annotation_dir
 
         self._poster_obj = None
         self._support_obj = None
@@ -64,11 +61,12 @@ class HangingPicturesReward(SequentialTaskReward):
         super().__init__(stage_completion_bonus=stage_completion_bonus)
 
     def reset(self, task, env):
+        stage_annotations = load_orchestrator_stage_annotations(self.orchestrators_annotation_dir)
         self._stage_objects = {
-            "move_to_poster": get_stage_objects(env, self.orchestrator_annotation_path, 0),
-            "pickup_from_bar": get_stage_objects(env, self.orchestrator_annotation_path, 1),
-            "move_to_wall_nail": get_stage_objects(env, self.orchestrator_annotation_path, 2),
-            "hang_on_wall_nail": get_stage_objects(env, self.orchestrator_annotation_path, 3),
+            "move_to_poster": get_stage_objects(env, stage_annotations[0]),
+            "pickup_from_bar": get_stage_objects(env, stage_annotations[1]),
+            "move_to_wall_nail": get_stage_objects(env, stage_annotations[2]),
+            "hang_on_wall_nail": get_stage_objects(env, stage_annotations[3]),
         }
         self._poster_obj = self._stage_objects["move_to_poster"][0] if self._stage_objects["move_to_poster"] else None
         self._support_obj = self._stage_objects["pickup_from_bar"][1] if len(self._stage_objects["pickup_from_bar"]) > 1 else None

@@ -1,6 +1,7 @@
 from omnigibson.object_states.toggle import ToggledOn, m as toggle_macros
 from omnigibson.reward_functions.sequential_task_reward import SequentialTaskReward
 from omnigibson.reward_functions.support_utils import (
+    load_orchestrator_stage_annotations,
     get_stage_objects,
     get_min_eef_distance_to_obj,
     get_min_eef_distance_to_toggle,
@@ -26,7 +27,7 @@ class TurningOnRadioReward(SequentialTaskReward):
         placedown_progress_scale=3.0,
         placedown_dense_scale=0.25,
         stage_completion_bonus=1.0,
-        orchestrator_annotation_path=None,
+        orchestrators_annotation_dir=None,
     ):
         self.move_to_success_threshold = move_to_success_threshold
         self.move_to_progress_scale = move_to_progress_scale
@@ -39,7 +40,7 @@ class TurningOnRadioReward(SequentialTaskReward):
         self.toggle_progress_dense_scale = toggle_progress_dense_scale
         self.placedown_progress_scale = placedown_progress_scale
         self.placedown_dense_scale = placedown_dense_scale
-        self.orchestrator_annotation_path = orchestrator_annotation_path
+        self.orchestrators_annotation_dir = orchestrators_annotation_dir
         self._radio_obj = None
         self._toggle_state = None
         self._support_obj = None
@@ -50,11 +51,12 @@ class TurningOnRadioReward(SequentialTaskReward):
         super().__init__(stage_completion_bonus=stage_completion_bonus)
 
     def reset(self, task, env):
+        stage_annotations = load_orchestrator_stage_annotations(self.orchestrators_annotation_dir)
         self._stage_objects = {
-            "move_to_radio": get_stage_objects(env, self.orchestrator_annotation_path, 0, required_state=ToggledOn),
-            "pickup_from_support": get_stage_objects(env, self.orchestrator_annotation_path, 1),
-            "press_radio": get_stage_objects(env, self.orchestrator_annotation_path, 2, required_state=ToggledOn),
-            "place_on_support": get_stage_objects(env, self.orchestrator_annotation_path, 3),
+            "move_to_radio": get_stage_objects(env, stage_annotations[0]),
+            "pickup_from_support": get_stage_objects(env, stage_annotations[1]),
+            "press_radio": get_stage_objects(env, stage_annotations[2]),
+            "place_on_support": get_stage_objects(env, stage_annotations[3]),
         }
         self._radio_obj = self._stage_objects["move_to_radio"][0] if self._stage_objects["move_to_radio"] else None
         self._toggle_state = self._radio_obj.states[ToggledOn] if self._radio_obj is not None else None

@@ -1,7 +1,6 @@
 from copy import deepcopy
-import json
-import logging
 import os
+import json
 from typing import Dict, List
 import numpy as np
 import torch as th
@@ -247,135 +246,16 @@ TASK_NAMES_TO_INDICES = {
 TASK_INDICES_TO_NAMES = {v: k for k, v in TASK_NAMES_TO_INDICES.items()}
 
 
-def get_demo_annotation_path(demo_data_dir, task_index, episode_index):
-    return os.path.join(
-        demo_data_dir,
-        "annotations",
-        f"task-{task_index:04d}",
-        f"episode_{int(episode_index):08d}.json",
-    )
-
-
-def resolve_demo_annotation_path(demo_data_dir, task_index, episode_index):
-    annotation_path = (
-        get_demo_annotation_path(
-            demo_data_dir=demo_data_dir,
-            task_index=task_index,
-            episode_index=episode_index,
-        )
-        if demo_data_dir is not None
-        else None
-    )
-    return annotation_path if annotation_path is not None and os.path.exists(annotation_path) else None
-
-
-def get_subtask_annotation_path(demo_data_dir, task_index, episode_index, subtask_index):
-    return os.path.join(
-        demo_data_dir,
-        "orchestrators",
-        f"task-{task_index:04d}",
-        f"episode_{int(episode_index):08d}",
-        f"subtask_{int(subtask_index)}_annotated.json",
-    )
-
-
-def load_subtask_annotation(demo_data_dir, task_index, episode_index, subtask_index):
-    annotation_path = get_subtask_annotation_path(
-        demo_data_dir=demo_data_dir,
-        task_index=task_index,
-        episode_index=episode_index,
-        subtask_index=subtask_index,
-    )
-    assert os.path.exists(annotation_path), f"Subtask annotation not found: {annotation_path}"
+def load_subtask_frame(orchestrators_annotation_dir, subtask_index, is_start_frame=True):
+    annotation_path = os.path.join(orchestrators_annotation_dir, f"subtask_{int(subtask_index)}_annotated.json")
     with open(annotation_path, "r") as f:
-        return annotation_path, json.load(f)
-
-
-def resolve_subtask_index_range(subtask_index=None, subtask_end_index=None):
-    if subtask_index is None:
-        assert subtask_end_index is None, "subtask_end_index requires subtask_index to also be set."
-        return None
-
-    start_idx = int(subtask_index)
-    end_idx = start_idx if subtask_end_index is None else int(subtask_end_index)
-    assert end_idx >= start_idx, (
-        f"Expected subtask_end_index >= subtask_index, got start={start_idx}, end={end_idx}"
+        subtask_info = json.load(f)
+    frame = subtask_info.get("start_frame") if is_start_frame else subtask_info.get("end_frame")
+    
+    assert isinstance(frame, int), (
+        f"Subtask annotation {annotation_path} is missing an integer frame: {frame}"
     )
-    return start_idx, end_idx
-
-
-def resolve_subtask_frame_range(demo_data_dir, task_index, episode_index, subtask_index, subtask_end_index=None):
-    """
-    Resolve the inclusive-exclusive frame range [start_frame, end_frame) for a
-    contiguous subtask selection. When only subtask_index is provided, this
-    resolves a single annotated subtask.
-    """
-    resolved_range = resolve_subtask_index_range(
-        subtask_index=subtask_index,
-        subtask_end_index=subtask_end_index,
-    )
-    assert resolved_range is not None, "subtask_index must be set to resolve a subtask frame range."
-    start_subtask_index, end_subtask_index = resolved_range
-
-    annotation_path, subtask_info = load_subtask_annotation(
-        demo_data_dir=demo_data_dir,
-        task_index=task_index,
-        episode_index=episode_index,
-        subtask_index=start_subtask_index,
-    )
-    end_annotation_path, end_subtask_info = load_subtask_annotation(
-        demo_data_dir=demo_data_dir,
-        task_index=task_index,
-        episode_index=episode_index,
-        subtask_index=end_subtask_index,
-    )
-    start_frame = subtask_info.get("start_frame")
-    end_frame = end_subtask_info.get("end_frame")
-    assert isinstance(start_frame, int), (
-        f"Subtask annotation {annotation_path} is missing an integer start_frame: {start_frame}"
-    )
-    assert isinstance(end_frame, int), (
-        f"Subtask annotation {end_annotation_path} is missing an integer end_frame: {end_frame}"
-    )
-    assert start_frame < end_frame, (
-        f"Subtask selection task={task_index}, episode={episode_index}, subtasks=[{start_subtask_index}, {end_subtask_index}] "
-        f"has invalid frame range: "
-        f"start_frame={start_frame}, end_frame={end_frame}"
-    )
-    return start_frame, end_frame
-
-
-def sync_task_reward_annotation_for_episode(task, demo_data_dir, task_index, episode_index, logger=None):
-    orchestrator_annotation_path = resolve_demo_annotation_path(
-        demo_data_dir=demo_data_dir,
-        task_index=task_index,
-        episode_index=episode_index,
-    )
-    reward_function = getattr(task, "_reward_functions", {}).get("task_specific", None)
-    if reward_function is None or not hasattr(reward_function, "orchestrator_annotation_path"):
-        return None
-
-    task_reward_kwargs = task._reward_config.get("task_specific_reward_kwargs", {})
-    reward_function.orchestrator_annotation_path = orchestrator_annotation_path
-    if orchestrator_annotation_path is None:
-        task_reward_kwargs.pop("orchestrator_annotation_path", None)
-    else:
-        task_reward_kwargs["orchestrator_annotation_path"] = orchestrator_annotation_path
-
-    active_logger = logger or logging.getLogger(__name__)
-    if orchestrator_annotation_path is not None:
-        active_logger.info(
-            "Using task reward orchestrator annotation for current episode: %s",
-            orchestrator_annotation_path,
-        )
-    else:
-        missing_path = get_demo_annotation_path(
-            demo_data_dir=demo_data_dir,
-            task_index=task_index,
-            episode_index=episode_index,
-        )
-        active_logger.warning("Task reward orchestrator annotation not found for current episode: %s", missing_path)
-    return orchestrator_annotation_path
+    return frame
 
 
 def extract_sequential_reward_info(info: Dict) -> Dict:
@@ -417,6 +297,37 @@ def delay_termination_until_stage_completion(info: Dict) -> Dict:
     return info
 
 
+def get_task_specific_reward(evaluator):
+    reward_functions = getattr(evaluator.env.task, "_reward_functions", {})
+    task_reward = reward_functions.get("task_specific") if isinstance(reward_functions, dict) else None
+    assert task_reward is not None, (
+        "Subtask reward-stage evaluation requires a task_specific reward. "
+        "Set instance_reward_mode=task or combined and provide a task-specific reward implementation."
+    )
+    return task_reward
+
+
+def get_reward_stage_result(info: Dict, target_stage_idx: int):
+    reward_info = info['reward']
+    stage_infos = reward_info['task_specific']['stage_infos']
+    stage_name = list(stage_infos.keys())[target_stage_idx]
+    stage_info = stage_infos[stage_name]
+    stage_completed = bool(stage_info['completed'])
+    return stage_completed, stage_info, reward_info
+
+
+def prime_task_reward_for_subtask(evaluator, subtask_idx: int) -> None:
+    task_reward = get_task_specific_reward(evaluator)
+    if hasattr(task_reward, "set_active_stage_index"):
+        # When we jump into subtask i from demo state, earlier reward stages
+        # should already count as finished so logs and completion checks align.
+        task_reward.set_active_stage_index(subtask_idx)
+
+
+def format_subtask_range_label(start_idx: int, end_idx: int) -> str:
+    return f"{start_idx}" if start_idx == end_idx else f"{start_idx}->{end_idx}"
+
+
 def _format_scalar(value) -> str:
     if isinstance(value, bool):
         return str(value)
@@ -454,7 +365,7 @@ def format_stage_status_chain(info: Dict):
     return " > ".join(parts)
 
 
-def _format_stage_progress_lines(info: Dict, *, concise: bool) -> List[str]:
+def format_stage_progress_lines(info: Dict, *, concise: bool=False) -> List[str]:
     reward_info = extract_sequential_reward_info(info or {})
     lines = []
     stage_chain = format_stage_status_chain(reward_info)
@@ -506,11 +417,7 @@ def _format_stage_progress_lines(info: Dict, *, concise: bool) -> List[str]:
 
 
 def format_video_info_lines(info: Dict, step: int, reward: float) -> List[str]:
-    return [f"step={step} reward={reward:.4f}", *_format_stage_progress_lines(info, concise=True)]
-
-
-def summarize_stage_progress(info: Dict) -> List[str]:
-    return _format_stage_progress_lines(info, concise=False)
+    return [f"step={step} reward={reward:.4f}", *format_stage_progress_lines(info, concise=True)]
 
 
 def generate_basic_environment_config(task_name, task_cfg):

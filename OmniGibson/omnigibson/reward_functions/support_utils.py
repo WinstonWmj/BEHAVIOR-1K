@@ -1,6 +1,5 @@
-import json
 import os
-import re
+import json
 
 import torch as th
 
@@ -13,96 +12,42 @@ from omnigibson.utils.ui_utils import create_module_logger
 log = create_module_logger(module_name=__name__)
 
 
-def _iter_annotation_names(values):
-    if isinstance(values, str):
-        yield values
-    elif isinstance(values, dict):
-        for value in values.values():
-            yield from _iter_annotation_names(value)
-    elif isinstance(values, (list, tuple, set)):
-        for value in values:
-            yield from _iter_annotation_names(value)
+def load_orchestrator_stage_annotations(orchestrators_annotation_dir):
+    stage_annotations = []
+    for filename in sorted(os.listdir(orchestrators_annotation_dir)):
+        if not (filename.startswith("subtask_") and filename.endswith("_annotated.json")):
+            continue
+        annotation_file = os.path.join(orchestrators_annotation_dir, filename)
+        try:
+            with open(annotation_file, "r") as f:
+                stage_annotations.append(json.load(f))
+        except (OSError, TypeError, ValueError) as exc:
+            log.warning(
+                "Stage annotation load for %s failed with %s. Skipping this stage annotation file.",
+                annotation_file,
+                type(exc).__name__,
+            )
+    return stage_annotations
 
-
-def find_object_by_name(env, object_name, required_state=None):
-    normalized_name = _normalize_text(object_name)
-    if not normalized_name:
-        return None
-
+def find_object_by_name(env, object_name):
     for obj in getattr(getattr(env, "scene", None), "objects", []):
         if obj is None or getattr(obj, "synset", None) == "agent":
             continue
-        if required_state is not None and (not hasattr(obj, "states") or required_state not in obj.states):
-            continue
-
-        if normalized_name in {
-            _normalize_text(getattr(obj, "name", "")),
-            _normalize_text(getattr(obj, "prim_path", "").rsplit("/", 1)[-1]),
+        if object_name in {
+            getattr(obj, "name", ""),
+            getattr(obj, "prim_path", "").rsplit("/", 1)[-1],
         }:
             return obj
 
     return None
 
-
-def load_stage_annotations(orchestrator_annotation_path):
-    orchestrator_dir = _get_orchestrator_annotation_dir(orchestrator_annotation_path)
-    if orchestrator_dir is None or not os.path.isdir(orchestrator_dir):
-        return []
-
-    stage_annotations = []
-    for filename in sorted(os.listdir(orchestrator_dir)):
-        if not (filename.startswith("subtask_") and filename.endswith("_annotated.json")):
-            continue
-        annotation_file = os.path.join(orchestrator_dir, filename)
-        try:
-            with open(annotation_file, "r") as f:
-                stage_annotations.append(json.load(f))
-        except (OSError, TypeError, ValueError) as exc:
-            _warn_exception(
-                f"Stage annotation load for {annotation_file}",
-                exc,
-                "Skipping this stage annotation file.",
-            )
-    return stage_annotations
-
-
-def get_stage_objects(env, orchestrator_annotation_path, stage_index, required_state=None):
-    stage_annotations = load_stage_annotations(orchestrator_annotation_path)
-    if stage_index < 0 or stage_index >= len(stage_annotations):
-        return []
-
-    object_names = list(_iter_annotation_names(stage_annotations[stage_index].get("object_id", [])))
+def get_stage_objects(env, stage_annotation):
+    object_names = list(stage_annotation.get("object_id", []))
     stage_objects = []
     for object_name in object_names:
-        obj = find_object_by_name(env, object_name, required_state=required_state)
+        obj = find_object_by_name(env, object_name)
         stage_objects.append(obj)
     return stage_objects
-
-
-def _get_orchestrator_annotation_dir(orchestrator_annotation_path):
-    if not orchestrator_annotation_path:
-        return None
-
-    normalized_path = os.path.normpath(orchestrator_annotation_path)
-    parts = normalized_path.split(os.sep)
-    try:
-        annotations_index = parts.index("annotations")
-    except ValueError:
-        return None
-
-    if len(parts) < annotations_index + 3:
-        return None
-
-    episode_filename = parts[-1]
-    episode_name, ext = os.path.splitext(episode_filename)
-    if ext != ".json":
-        return None
-
-    orchestrator_parts = list(parts[:])
-    orchestrator_parts[annotations_index] = "orchestrators"
-    orchestrator_parts[-1] = episode_name
-    return os.sep.join(orchestrator_parts)
-
 
 def _warn_exception(context, exc, fallback_message):
     """
@@ -125,26 +70,26 @@ def _warn_exception(context, exc, fallback_message):
     log.warning(f"[RewardSupport] {context} failed with {type(exc).__name__}. {fallback_message}")
 
 
-def _normalize_text(text):
-    """
-    Normalize text for fuzzy matching by converting to lowercase and removing special characters.
+# def _normalize_text(text):
+#     """
+#     Normalize text for fuzzy matching by converting to lowercase and removing special characters.
     
-    This function:
-    1. Converts text to lowercase
-    2. Replaces all non-alphanumeric characters with spaces
-    3. Strips leading/trailing whitespace
+#     This function:
+#     1. Converts text to lowercase
+#     2. Replaces all non-alphanumeric characters with spaces
+#     3. Strips leading/trailing whitespace
     
-    Args:
-        text: Input text to normalize
+#     Args:
+#         text: Input text to normalize
     
-    Returns:
-        Normalized text string suitable for fuzzy matching
+#     Returns:
+#         Normalized text string suitable for fuzzy matching
     
-    Examples:
-        _normalize_text("Wall-Nail_01") -> "wall nail 01"
-        _normalize_text("Poster.v2") -> "poster v2"
-    """
-    return re.sub(r"[^a-z0-9]+", " ", str(text).lower()).strip()
+#     Examples:
+#         _normalize_text("Wall-Nail_01") -> "wall nail 01"
+#         _normalize_text("Poster.v2") -> "poster v2"
+#     """
+#     return re.sub(r"[^a-z0-9]+", " ", str(text).lower()).strip()
 
 
 def get_obj_center(obj):
@@ -410,11 +355,6 @@ def is_attached_to_target(child_obj, parent_obj):
     """
     Check if child_obj is attached to parent_obj using the AttachedTo state.
     
-    This function uses is_same_object() for comparison instead of direct object reference
-    equality (==), which is important when replaying ground truth data or when object
-    references may be refreshed/reloaded during simulation. Direct reference comparison
-    can fail even when the objects represent the same entity in the scene.
-    
     Args:
         child_obj: The object that should be attached (e.g., poster)
         parent_obj: The object that should be the attachment target (e.g., wall_nail)
@@ -423,17 +363,12 @@ def is_attached_to_target(child_obj, parent_obj):
         bool: True if child_obj is attached to parent_obj, False otherwise
     """
     from omnigibson.object_states.attached_to import AttachedTo
-    res = bool(child_obj.states[AttachedTo].get_value(parent_obj))
-    print(f"DEBUG: is_attached_to_target result = {res}")
+    
     if child_obj is None or parent_obj is None or AttachedTo not in child_obj.states:
         return False
     
     try:
-        attached_state = child_obj.states[AttachedTo]
-        current_parent = attached_state.parent
-        
-        # Use is_same_object for robust comparison across object reference changes
-        return current_parent is not None and is_same_object(current_parent, parent_obj)
+        return bool(child_obj.states[AttachedTo].get_value(parent_obj))
     except (AttributeError, RuntimeError, TypeError, ValueError) as exc:
         _warn_exception(
             "AttachedTo state query",
