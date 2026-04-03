@@ -23,6 +23,7 @@ from omnigibson.objects.dataset_object import DatasetObject
 from omnigibson.object_states import Pose
 from omnigibson.reward_functions.potential_reward import PotentialReward
 from omnigibson.reward_functions.hanging_pictures_reward import HangingPicturesReward
+from omnigibson.reward_functions.make_microwave_popcorn_reward import MakeMicrowavePopcornReward
 from omnigibson.reward_functions.turning_on_radio_reward import TurningOnRadioReward
 from omnigibson.scenes.scene_base import Scene
 from omnigibson.scenes.traversable_scene import TraversableScene
@@ -223,6 +224,8 @@ class BehaviorTask(BaseTask):
                 rewards["task_specific"] = TurningOnRadioReward(**task_reward_kwargs)
             elif task_reward_name == "hanging_pictures":
                 rewards["task_specific"] = HangingPicturesReward(**task_reward_kwargs)
+            elif task_reward_name == "make_microwave_popcorn":
+                rewards["task_specific"] = MakeMicrowavePopcornReward(**task_reward_kwargs)
             else:
                 log.warning(
                     "No task-specific reward implemented for activity '%s'; falling back to configured rewards.",
