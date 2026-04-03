@@ -21,6 +21,9 @@ from omnigibson.macros import gm
 from omnigibson.objects.dataset_object import DatasetObject
 from omnigibson.object_states import Pose
 from omnigibson.reward_functions.potential_reward import PotentialReward
+from omnigibson.reward_functions.hanging_pictures_reward import HangingPicturesReward
+from omnigibson.reward_functions.make_microwave_popcorn_reward import MakeMicrowavePopcornReward
+from omnigibson.reward_functions.turning_on_radio_reward import TurningOnRadioReward
 from omnigibson.scenes.scene_base import Scene
 from omnigibson.scenes.traversable_scene import TraversableScene
 from omnigibson.tasks.task_base import BaseTask
@@ -207,10 +210,31 @@ class BehaviorTask(BaseTask):
         # Initialize reward functions dict and fill in with Potential reward
         rewards = dict()
 
-        rewards["potential"] = PotentialReward(
-            potential_fcn=self.get_potential,
-            r_potential=self._reward_config["r_potential"],
-        )
+        if reward_mode in {"potential", "combined"}:
+            rewards["potential"] = PotentialReward(
+                potential_fcn=self.get_potential,
+                r_potential=self._reward_config["r_potential"],
+            )
+
+        if reward_mode in {"task", "combined"}:
+            if task_reward_name == "turning_on_radio":
+                rewards["task_specific"] = TurningOnRadioReward(**task_reward_kwargs)
+            elif task_reward_name == "hanging_pictures":
+                rewards["task_specific"] = HangingPicturesReward(**task_reward_kwargs)
+            elif task_reward_name == "make_microwave_popcorn":
+                rewards["task_specific"] = MakeMicrowavePopcornReward(**task_reward_kwargs)
+            else:
+                log.warning(
+                    "No task-specific reward implemented for activity '%s'; falling back to configured rewards.",
+                    task_reward_name,
+                )
+
+        if len(rewards) == 0:
+            log.warning("Reward set was empty; falling back to PotentialReward.")
+            rewards["potential"] = PotentialReward(
+                potential_fcn=self.get_potential,
+                r_potential=self._reward_config["r_potential"],
+            )
 
         return rewards
 

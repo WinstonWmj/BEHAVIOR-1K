@@ -1,19 +1,20 @@
 export CUDA_VISIBLE_DEVICES=0
 
-TASK=turning_on_radio # turning_on_radio, hanging_pictures
+TASK=make_microwave_popcorn # turning_on_radio, hanging_pictures make_microwave_popcorn
 EVAL_LEVEL=${EVAL_LEVEL:-instance}  # instance or subtask
 POLICY_MODE=${POLICY_MODE:-demo_expert}  # websocket or demo_expert
 MODEL_HOST=${MODEL_HOST:-localhost}
 MODEL_PORT=${MODEL_PORT:-8007}
 B1K_DEMO_ROOT=${B1K_DEMO_ROOT:-/home/dell/mjwei/download_models/2025-challenge-demos}
-RUN_EPISODE_IDX=${RUN_EPISODE_IDX:-10}
-SUBTASK_INDEX=${SUBTASK_INDEX:-1}
-SUBTASK_END_INDEX=${SUBTASK_END_INDEX:-3}
+RUN_EPISODE_IDX=${RUN_EPISODE_IDX:-400070}  # 10 340060 400070
+SUBTASK_INDEX=${SUBTASK_INDEX:-0}
+SUBTASK_END_INDEX=${SUBTASK_END_INDEX:-7}
 MAX_STEPS=${MAX_STEPS:-}
 WAITING_FOR_STAGE_COMPLETION=${WAITING_FOR_STAGE_COMPLETION:-true}
 KEEP_RUNNING_AFTER_SUCCESS=${KEEP_RUNNING_AFTER_SUCCESS:-true}
-INSTANCE_IDS=${INSTANCE_IDS:-[0]}  # only used in instance mode
-LOG_BASE=./logs/${EVAL_LEVEL}_eval/turning_on_radio_task_reward/demoexpert-turningonradio-hastext-debugstop
+HEADLESS=${HEADLESS:-true}
+INSTANCE_IDS=${INSTANCE_IDS:-[6]}  # only used in instance mode; 0 4 6
+LOG_BASE=./logs/${EVAL_LEVEL}_eval/make_microwave_popcorn-task_reward/demoexpert-make_microwave_popcorn-hastext-debug-70-disbale
 PYTHON_BIN=${PYTHON_BIN:-python}
 
 if ! command -v "${PYTHON_BIN}" >/dev/null 2>&1; then
@@ -30,6 +31,7 @@ echo "Evaluating task: ${TASK} (${EVAL_LEVEL} mode)"
 echo "Policy mode: ${POLICY_MODE}"
 echo "Reward mode: task"
 echo "Demo root: ${B1K_DEMO_ROOT}"
+echo "headless: ${HEADLESS}"
 echo "waiting_for_stage_completion: ${WAITING_FOR_STAGE_COMPLETION}"
 echo "keep_running_after_success: ${KEEP_RUNNING_AFTER_SUCCESS}"
 if [ -n "${SUBTASK_INDEX}" ]; then
@@ -45,6 +47,7 @@ COMMON_ARGS=(
   log_path=${LOG_BASE}/${TASK}
   task.name="${TASK}"
   eval_level="${EVAL_LEVEL}"
+  headless=${HEADLESS}
   instance_reward_mode=task
   waiting_for_stage_completion=${WAITING_FOR_STAGE_COMPLETION}
   keep_running_after_success=${KEEP_RUNNING_AFTER_SUCCESS}
