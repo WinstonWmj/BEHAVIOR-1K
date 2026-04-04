@@ -1,20 +1,20 @@
 export CUDA_VISIBLE_DEVICES=0
 
-TASK=make_microwave_popcorn # turning_on_radio, hanging_pictures make_microwave_popcorn
+TASK=set_up_a_coffee_station_in_your_kitchen # turning_on_radio hanging_pictures make_microwave_popcorn picking_up_trash set_up_a_coffee_station_in_your_kitchen
 EVAL_LEVEL=${EVAL_LEVEL:-instance}  # instance or subtask
 POLICY_MODE=${POLICY_MODE:-demo_expert}  # websocket or demo_expert
 MODEL_HOST=${MODEL_HOST:-localhost}
 MODEL_PORT=${MODEL_PORT:-8007}
 B1K_DEMO_ROOT=${B1K_DEMO_ROOT:-/home/dell/mjwei/download_models/2025-challenge-demos}
-RUN_EPISODE_IDX=${RUN_EPISODE_IDX:-400070}  # 10 340060 400070
+RUN_EPISODE_IDX=${RUN_EPISODE_IDX:-100010}  # 10 340060 400070 10020 100010
 SUBTASK_INDEX=${SUBTASK_INDEX:-0}
-SUBTASK_END_INDEX=${SUBTASK_END_INDEX:-7}
+SUBTASK_END_INDEX=${SUBTASK_END_INDEX:-15}  # 3 3 7 11 15
 MAX_STEPS=${MAX_STEPS:-}
 WAITING_FOR_STAGE_COMPLETION=${WAITING_FOR_STAGE_COMPLETION:-true}
 KEEP_RUNNING_AFTER_SUCCESS=${KEEP_RUNNING_AFTER_SUCCESS:-true}
 HEADLESS=${HEADLESS:-true}
-INSTANCE_IDS=${INSTANCE_IDS:-[6]}  # only used in instance mode; 0 4 6
-LOG_BASE=./logs/${EVAL_LEVEL}_eval/make_microwave_popcorn-task_reward/demoexpert-make_microwave_popcorn-hastext-debug-70-disbale
+INSTANCE_IDS=${INSTANCE_IDS:-[0]}  # only used in instance mode; 0 4 6 1 0
+LOG_BASE=./logs/${EVAL_LEVEL}_eval/set_up_a_coffee_station_in_your_kitchen-task_reward/demoexpert-set_up_a_coffee_station_in_your_kitchen-hastext-debug-10-withreward-1
 PYTHON_BIN=${PYTHON_BIN:-python}
 
 if ! command -v "${PYTHON_BIN}" >/dev/null 2>&1; then

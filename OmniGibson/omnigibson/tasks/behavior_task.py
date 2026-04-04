@@ -24,6 +24,10 @@ from omnigibson.object_states import Pose
 from omnigibson.reward_functions.potential_reward import PotentialReward
 from omnigibson.reward_functions.hanging_pictures_reward import HangingPicturesReward
 from omnigibson.reward_functions.make_microwave_popcorn_reward import MakeMicrowavePopcornReward
+from omnigibson.reward_functions.picking_up_trash_reward import PickingUpTrashReward
+from omnigibson.reward_functions.set_up_a_coffee_station_in_your_kitchen_reward import (
+    SetUpACoffeeStationInYourKitchenReward,
+)
 from omnigibson.reward_functions.turning_on_radio_reward import TurningOnRadioReward
 from omnigibson.scenes.scene_base import Scene
 from omnigibson.scenes.traversable_scene import TraversableScene
@@ -224,6 +228,10 @@ class BehaviorTask(BaseTask):
                 rewards["task_specific"] = TurningOnRadioReward(**task_reward_kwargs)
             elif task_reward_name == "hanging_pictures":
                 rewards["task_specific"] = HangingPicturesReward(**task_reward_kwargs)
+            elif task_reward_name == "picking_up_trash":
+                rewards["task_specific"] = PickingUpTrashReward(**task_reward_kwargs)
+            elif task_reward_name == "set_up_a_coffee_station_in_your_kitchen":
+                rewards["task_specific"] = SetUpACoffeeStationInYourKitchenReward(**task_reward_kwargs)
             elif task_reward_name == "make_microwave_popcorn":
                 rewards["task_specific"] = MakeMicrowavePopcornReward(**task_reward_kwargs)
             else:
