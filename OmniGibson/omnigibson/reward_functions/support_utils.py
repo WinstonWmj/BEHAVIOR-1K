@@ -1,5 +1,6 @@
 import os
 import json
+import re
 
 import torch as th
 
@@ -14,7 +15,11 @@ log = create_module_logger(module_name=__name__)
 
 def load_orchestrator_stage_annotations(orchestrators_annotation_dir):
     stage_annotations = []
-    for filename in sorted(os.listdir(orchestrators_annotation_dir)):
+    def _subtask_sort_key(filename):
+        match = re.match(r"subtask_(\d+)_annotated\.json$", filename)
+        return int(match.group(1)) if match else float("inf")
+
+    for filename in sorted(os.listdir(orchestrators_annotation_dir), key=_subtask_sort_key):
         if not (filename.startswith("subtask_") and filename.endswith("_annotated.json")):
             continue
         annotation_file = os.path.join(orchestrators_annotation_dir, filename)
