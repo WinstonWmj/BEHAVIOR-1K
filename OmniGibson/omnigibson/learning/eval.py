@@ -46,7 +46,7 @@ from omnigibson.utils.asset_utils import get_task_instance_path
 from omnigibson.utils.python_utils import recursively_convert_to_torch
 from pathlib import Path
 from signal import signal, SIGINT
-from typing import Any, Tuple, List
+from typing import Any, Optional, Tuple, List
 
 m = create_module_macros(module_path=__file__)
 m.NUM_EVAL_EPISODES = 1
@@ -337,7 +337,24 @@ class Evaluator:
         """
         Write the current robot observations to video.
         """
-        # concatenate obs
+        frame = self._compose_video_frame()
+        if frame is None:
+            return
+        write_video(
+            np.expand_dims(frame, 0),
+            video_writer=self.video_writer,
+            batch_size=1,
+            mode="rgb",
+        )
+
+    def _compose_video_frame(self) -> Optional[np.ndarray]:
+        """
+        Compose a fixed-size video frame so camera views keep their intended aspect ratio
+        even when the info banner is present.
+        """
+        if ROBOT_CAMERA_NAMES["R1Pro"]["head"] + "::rgb" not in self.obs:
+            return None
+
         left_wrist_rgb = cv2.resize(
             self.obs[ROBOT_CAMERA_NAMES["R1Pro"]["left_wrist"] + "::rgb"].numpy(),
             (224, 224),
@@ -351,18 +368,21 @@ class Evaluator:
             (448, 448),
         )
         frame = np.hstack([np.vstack([left_wrist_rgb, right_wrist_rgb]), head_rgb])
-        frame = overlay_info_banner(
+        return overlay_info_banner(
             frame,
             info=self.last_step_info,
             step=self.env._current_step,
             reward=self.last_step_reward,
+            banner_height=256,
         )
-        write_video(
-            np.expand_dims(np.hstack([np.vstack([left_wrist_rgb, right_wrist_rgb]), head_rgb]), 0),
-            video_writer=self.video_writer,
-            batch_size=1,
-            mode="rgb",
-        )
+
+    def _get_video_resolution(self) -> Tuple[int, int]:
+        """
+        Return the final video resolution after the banner is added.
+        """
+        frame = self._compose_video_frame()
+        assert frame is not None, "Cannot infer video resolution without RGB camera observations."
+        return frame.shape[:2]
 
     def reset(self) -> None:
         """
@@ -516,7 +536,7 @@ def _run_subtask_eval(config, logger):
             )
             evaluator.video_writer = create_video_writer(
                 fpath=video_name,
-                resolution=(448, 672),
+                resolution=evaluator._get_video_resolution(),
             )
 
         for metric in evaluator.metrics:
@@ -654,7 +674,7 @@ def _run_instance_eval(config, logger):
                     video_name = str(video_path) + f"/video_{idx}_{epi}.mp4"
                     evaluator.video_writer = create_video_writer(
                         fpath=video_name,
-                        resolution=(448, 672),
+                        resolution=evaluator._get_video_resolution(),
                     )
                 # run metric start callbacks
                 for metric in evaluator.metrics:
