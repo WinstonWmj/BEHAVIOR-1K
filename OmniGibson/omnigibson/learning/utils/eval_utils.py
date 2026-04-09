@@ -2,10 +2,12 @@ from copy import deepcopy
 import os
 import json
 import csv
+import re
 from typing import Dict, List
 import numpy as np
 import torch as th
 from collections import OrderedDict
+from pathlib import Path
 
 
 ROBOT_CAMERA_NAMES = {
@@ -257,6 +259,171 @@ def load_subtask_frame(orchestrators_annotation_dir, subtask_index, is_start_fra
         f"Subtask annotation {annotation_path} is missing an integer frame: {frame}"
     )
     return frame
+
+
+def load_subtask_annotations(orchestrators_annotation_dir) -> List[tuple[int, Dict]]:
+    """
+    Load all subtask annotation files for one episode in index order.
+    """
+    annotation_dir = Path(orchestrators_annotation_dir)
+    annotations = []
+    for annotation_path in sorted(
+        annotation_dir.glob("subtask_*_annotated.json"),
+        key=lambda path: int(path.stem.split("_")[1]),
+    ):
+        subtask_index = int(annotation_path.stem.split("_")[1])
+        with open(annotation_path, "r") as f:
+            annotations.append((subtask_index, json.load(f)))
+    return annotations
+
+
+def normalize_skill_text(skill_text: str) -> str:
+    """
+    Normalize free-form skill text into a stable snake_case token for matching.
+    """
+    normalized = re.sub(r"[^a-z0-9]+", "_", str(skill_text or "").strip().lower())
+    return normalized.strip("_")
+
+
+def canonicalize_skill_label(skill_text: str) -> str:
+    """
+    Collapse different user / annotation spellings into one canonical skill key.
+    """
+    normalized = normalize_skill_text(skill_text)
+    collapsed = normalized.replace("_", "")
+
+    if collapsed.startswith("moveto"):
+        return "move_to"
+    if collapsed.startswith("pick") and "from" in collapsed:
+        return "pickup_from"
+    if collapsed.startswith("press"):
+        return "press"
+    if collapsed.startswith("place") and "nextto" in collapsed and "on" in collapsed:
+        return "place_on_next_to"
+    if collapsed.startswith("place") and "on" in collapsed:
+        return "place_on"
+    if collapsed.startswith("place") and "in" in collapsed:
+        return "place_in"
+
+    return normalized
+
+
+def subtask_matches_skill(subtask_info: Dict, target_skill: str) -> bool:
+    """
+    Match one subtask annotation against a user-facing skill selector.
+    """
+    target_normalized = normalize_skill_text(target_skill)
+    target_canonical = canonicalize_skill_label(target_skill)
+
+    candidate_texts = [
+        subtask_info.get("skill_description", ""),
+        subtask_info.get("cot_subtask_description", ""),
+    ]
+    candidate_tokens = {
+        normalize_skill_text(text)
+        for text in candidate_texts
+        if isinstance(text, str) and len(text.strip()) > 0
+    }
+    candidate_tokens.update(
+        canonicalize_skill_label(text)
+        for text in candidate_texts
+        if isinstance(text, str) and len(text.strip()) > 0
+    )
+    return target_normalized in candidate_tokens or target_canonical in candidate_tokens
+
+
+def build_subtask_eval_targets(
+    orchestrators_annotation_dir,
+    *,
+    subtask_skill=None,
+    subtask_index=None,
+    subtask_end_index=None,
+) -> List[Dict]:
+    """
+    Resolve subtask evaluation targets from either a skill filter or an explicit index range.
+    """
+    annotations = load_subtask_annotations(orchestrators_annotation_dir)
+    assert len(annotations) > 0, f"No subtask annotations found under {orchestrators_annotation_dir}"
+
+    annotation_map = {subtask_idx: subtask_info for subtask_idx, subtask_info in annotations}
+
+    if subtask_skill is not None:
+        matches = [
+            (subtask_idx, subtask_info)
+            for subtask_idx, subtask_info in annotations
+            if subtask_matches_skill(subtask_info, subtask_skill)
+        ]
+        assert len(matches) > 0, (
+            f"No subtasks matched skill '{subtask_skill}' under {orchestrators_annotation_dir}"
+        )
+        return [
+            {
+                "subtask_start_idx": subtask_idx,
+                "subtask_end_idx": subtask_idx,
+                "selected_subtask_infos": [(subtask_idx, subtask_info)],
+                "selection_mode": "skill",
+                "selection_value": subtask_skill,
+            }
+            for subtask_idx, subtask_info in matches
+        ]
+
+    if subtask_index is not None:
+        resolved_start_idx = int(subtask_index)
+        resolved_end_idx = resolved_start_idx if subtask_end_index is None else int(subtask_end_index)
+        assert resolved_start_idx <= resolved_end_idx, (
+            f"Expected subtask_index <= subtask_end_index, got {resolved_start_idx} > {resolved_end_idx}"
+        )
+        selected_subtask_infos = []
+        for idx in range(resolved_start_idx, resolved_end_idx + 1):
+            assert idx in annotation_map, (
+                f"Missing subtask_{idx}_annotated.json under {orchestrators_annotation_dir}"
+            )
+            selected_subtask_infos.append((idx, annotation_map[idx]))
+        return [
+            {
+                "subtask_start_idx": resolved_start_idx,
+                "subtask_end_idx": resolved_end_idx,
+                "selected_subtask_infos": selected_subtask_infos,
+                "selection_mode": "index",
+                "selection_value": format_subtask_range_label(resolved_start_idx, resolved_end_idx),
+            }
+        ]
+
+    # When no selector is provided, evaluate every annotated subtask individually.
+    return [
+        {
+            "subtask_start_idx": subtask_idx,
+            "subtask_end_idx": subtask_idx,
+            "selected_subtask_infos": [(subtask_idx, subtask_info)],
+            "selection_mode": "all",
+            "selection_value": "all",
+        }
+        for subtask_idx, subtask_info in annotations
+    ]
+
+
+def resolve_episode_indices(
+    demo_data_dir,
+    task_index: int,
+    *,
+    run_episode_idx=None,
+    run_episode_indices=None,
+) -> List[int]:
+    """
+    Resolve which demo episodes to evaluate for one task.
+    """
+    selected = run_episode_indices if run_episode_indices is not None else run_episode_idx
+    if selected is not None:
+        if not isinstance(selected, (str, bytes)) and hasattr(selected, "__iter__"):
+            return [int(episode_index) for episode_index in selected]
+        return [int(selected)]
+
+    episode_root = Path(demo_data_dir) / "orchestrators" / f"task-{task_index:04d}"
+    episode_dirs = sorted(
+        episode_root.glob("episode_*"),
+        key=lambda path: int(path.name.split("_")[1]),
+    )
+    return [int(path.name.split("_")[1]) for path in episode_dirs]
 
 
 def extract_sequential_reward_info(info: Dict) -> Dict:
