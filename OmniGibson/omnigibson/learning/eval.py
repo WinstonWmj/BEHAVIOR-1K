@@ -223,6 +223,12 @@ class Evaluator:
         # Convert local numpy demo actions into the tensor format expected by the environment.
         return th.as_tensor(action, dtype=th.float32)
 
+    def _policy_needs_obs(self, policy: Any) -> bool:
+        """
+        Return whether the next policy query requires a fresh observation.
+        """
+        return bool(getattr(policy, "needs_obs", True))
+
     def _step_with_policy(
         self,
         policy: Any,
@@ -234,9 +240,17 @@ class Evaluator:
         """
         Step the environment with an arbitrary policy while controlling evaluation bookkeeping.
         """
-        self.robot_action = self._query_policy_action(policy, self.obs)
+        current_obs = self.obs if self._policy_needs_obs(policy) else None
+        self.robot_action = self._query_policy_action(policy, current_obs)
+        needs_obs_after_step = self._policy_needs_obs(policy)
 
-        obs, reward, terminated, truncated, info = self.env.step(self.robot_action, n_render_iterations=1)
+        if needs_obs_after_step or self.cfg.write_video:
+            obs, reward, terminated, truncated, info = self.env.step(self.robot_action, n_render_iterations=1)
+            self.obs = self._preprocess_obs(obs)
+        else:
+            # Skip rendering and camera reads for cached VLA chunk actions.
+            with og.sim.render_on_step(False):
+                terminated, truncated, reward, info = self._fast_env_step(self.robot_action)
         if terminated and not truncated and apply_success_delay and (
             self.cfg.waiting_for_stage_completion or self.cfg.keep_running_after_success
         ):
@@ -254,7 +268,6 @@ class Evaluator:
         self.last_step_reward = reward
         self.last_step_info = info
         self.last_policy_done = bool(getattr(policy, "is_done", False))
-        self.obs = self._preprocess_obs(obs)
 
         if track_trial_results and (terminated or truncated):
             self.n_trials += 1
@@ -266,15 +279,11 @@ class Evaluator:
                 metric.step_callback(self.env)
         return terminated, truncated, reward, info
 
-    def _fast_step_with_policy(self, policy: Any) -> Tuple[bool, bool, float, dict]:
+    def _fast_env_step(self, action: th.Tensor) -> Tuple[bool, bool, float, dict]:
         """
         Step the simulator without collecting observations.
-
-        This is used during demo warmup because the replay policy ignores observations,
-        so we can skip expensive camera reads and intermediate renders until the handoff.
         """
-        self.robot_action = self._query_policy_action(policy, self.obs)
-        action = self.env._convert_action_to_tensor(self.robot_action)
+        action = self.env._convert_action_to_tensor(action)
         self.env._pre_step(action)
         og.sim.step()
 
@@ -294,8 +303,17 @@ class Evaluator:
 
         self.last_step_reward = reward
         self.last_step_info = info
-        self.last_policy_done = bool(getattr(policy, "is_done", False))
         self.env._current_step += 1
+        return terminated, truncated, reward, info
+
+    def _fast_step_with_policy(self, policy: Any) -> Tuple[bool, bool, float, dict]:
+        """
+        Step the simulator without collecting observations after querying a policy.
+        """
+        current_obs = self.obs if self._policy_needs_obs(policy) else None
+        self.robot_action = self._query_policy_action(policy, current_obs)
+        terminated, truncated, reward, info = self._fast_env_step(self.robot_action)
+        self.last_policy_done = bool(getattr(policy, "is_done", False))
         return terminated, truncated, reward, info
 
     def step(self) -> Tuple[bool, bool]:

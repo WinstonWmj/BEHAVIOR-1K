@@ -79,13 +79,20 @@ class WebsocketPolicy:
         logging.info(f"WebsocketPolicy reconnected: {old_endpoint} -> {self.endpoint}")
 
     def forward(self, obs: dict, *args, **kwargs) -> th.Tensor:
-        obs = torch_to_numpy(obs)
+        obs = torch_to_numpy(obs) if obs is not None else None
         self.last_action = self.policy.act(obs).detach().cpu()
         return self.last_action
 
     @property
     def is_done(self) -> bool:
         return bool(self.policy is not None and getattr(self.policy, "is_done", False))
+
+    @property
+    def needs_obs(self) -> bool:
+        """
+        Whether the websocket policy needs a fresh observation for the next action request.
+        """
+        return bool(self.policy is None or getattr(self.policy, "needs_obs", True))
 
     def reset(self) -> None:
         if self.policy is not None:
