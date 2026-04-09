@@ -248,6 +248,38 @@ class Evaluator:
                 metric.step_callback(self.env)
         return terminated, truncated, reward, info
 
+    def _fast_step_with_policy(self, policy: Any) -> Tuple[bool, bool, float, dict]:
+        """
+        Step the simulator without collecting observations.
+
+        This is used during demo warmup because the replay policy ignores observations,
+        so we can skip expensive camera reads and intermediate renders until the handoff.
+        """
+        self.robot_action = self._query_policy_action(policy, self.obs)
+        action = self.env._convert_action_to_tensor(self.robot_action)
+        self.env._pre_step(action)
+        og.sim.step()
+
+        # Skip get_obs() entirely to make warmup as light as possible.
+        reward, done, info = self.env.task.step(self.env, action)
+        self.env._populate_info(info)
+
+        terminated = False
+        truncated = False
+        for tc, tc_data in info["done"]["termination_conditions"].items():
+            if tc_data["done"]:
+                if tc == "timeout":
+                    truncated = True
+                else:
+                    terminated = True
+        assert (terminated or truncated) == done, "Terminated and truncated must match done!"
+
+        self.last_step_reward = reward
+        self.last_step_info = info
+        self.last_policy_done = bool(getattr(policy, "is_done", False))
+        self.env._current_step += 1
+        return terminated, truncated, reward, info
+
     def step(self) -> Tuple[bool, bool]:
         """
         Performs a single step of the task by executing the policy, interacting with the environment,
@@ -423,29 +455,26 @@ class Evaluator:
         )
 
         warmup_steps = 0
-        while not replay_policy.is_done:
-            terminated, truncated, reward, info = self._step_with_policy(
-                replay_policy,
-                apply_success_delay=False,
-                run_metrics=False,
-                track_trial_results=False,
-            )
-            warmup_steps += 1
-            if terminated or truncated:
-                raise RuntimeError(
-                    "Demo warmup terminated before reaching the preparatory state "
-                    f"(episode={episode_index}, target_start_frame={target_start_frame}, "
-                    f"warmup_steps={warmup_steps}, terminated={terminated}, truncated={truncated}, info={info})"
-                )
-            if warmup_steps % 100 == 0:
-                logger.info(
-                    "  warmup_step=%d/%d reward=%.4f",
-                    warmup_steps,
-                    target_start_frame,
-                    reward,
-                )
+        # Disable render-on-step during warmup because the replay policy does not consume images.
+        with og.sim.render_on_step(False):
+            while not replay_policy.is_done:
+                terminated, truncated, reward, info = self._fast_step_with_policy(replay_policy)
+                warmup_steps += 1
+                if terminated or truncated:
+                    raise RuntimeError(
+                        "Demo warmup terminated before reaching the preparatory state "
+                        f"(episode={episode_index}, target_start_frame={target_start_frame}, "
+                        f"warmup_steps={warmup_steps}, terminated={terminated}, truncated={truncated}, info={info})"
+                    )
+                if warmup_steps % 100 == 0:
+                    logger.info(
+                        "  warmup_step=%d/%d reward=%.4f",
+                        warmup_steps,
+                        target_start_frame,
+                        reward,
+                    )
 
-        # Refresh the observation once more so the first VLA step sees the settled preparatory state.
+        # Render only once at the handoff boundary so the first VLA step sees fresh camera observations.
         og.sim.render()
         self.obs = self._preprocess_obs(self.env.get_obs()[0])
         self.last_policy_done = False
