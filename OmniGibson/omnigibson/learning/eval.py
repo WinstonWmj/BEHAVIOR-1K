@@ -445,13 +445,19 @@ class Evaluator:
         task_index: int,
         episode_index: int,
         target_start_frame: int,
+        required_warmup_stage_idx: Optional[int] = None,
     ) -> dict:
         """
         Replay demo actions from frame 0 until the target subtask start frame.
         """
         if target_start_frame <= 0:
             logger.info("Skipping demo warmup because the target subtask starts at frame 0.")
-            return {"used_demo_warmup": False, "warmup_steps": 0, "warmup_end_frame": 0}
+            return {
+                "used_demo_warmup": False,
+                "warmup_steps": 0,
+                "warmup_end_frame": 0,
+                "warmup_ready_for_policy": True,
+            }
 
         parquet_path = (
             Path(demo_data_dir) / "data" / f"task-{task_index:04d}" / f"episode_{episode_index:08d}.parquet"
@@ -473,24 +479,20 @@ class Evaluator:
         )
 
         warmup_steps = 0
+        warmup_ready_for_policy = required_warmup_stage_idx is None
         # Disable render-on-step during warmup because the replay policy does not consume images.
         with og.sim.render_on_step(False):
             while not replay_policy.is_done:
                 terminated, truncated, reward, info = self._fast_step_with_policy(replay_policy)
+                if required_warmup_stage_idx is not None:
+                    # Track whether the last prerequisite stage has become completed by the current warmup step.
+                    warmup_ready_for_policy, _, _ = get_reward_stage_result(
+                        info=info,
+                        target_stage_idx=required_warmup_stage_idx,
+                    )
                 warmup_steps += 1
-                if terminated or truncated:
-                    raise RuntimeError(
-                        "Demo warmup terminated before reaching the preparatory state "
-                        f"(episode={episode_index}, target_start_frame={target_start_frame}, "
-                        f"warmup_steps={warmup_steps}, terminated={terminated}, truncated={truncated}, info={info})"
-                    )
-                if warmup_steps % 100 == 0:
-                    logger.info(
-                        "  warmup_step=%d/%d reward=%.4f",
-                        warmup_steps,
-                        target_start_frame,
-                        reward,
-                    )
+                if warmup_steps % 100 == 0 or warmup_ready_for_policy==True:
+                    logger.info(f"  warmup_step={warmup_steps}/{target_start_frame} reward={reward:.4f} warmup_ready_for_policy={warmup_ready_for_policy}")
 
         # Render only once at the handoff boundary so the first VLA step sees fresh camera observations.
         og.sim.render()
@@ -505,6 +507,7 @@ class Evaluator:
             "used_demo_warmup": True,
             "warmup_steps": warmup_steps,
             "warmup_end_frame": target_start_frame,
+            "warmup_ready_for_policy": warmup_ready_for_policy,
         }
 
     def find_scene_object(self, obj_name: str):
@@ -686,6 +689,7 @@ def _run_subtask_eval(config, logger):
     with Evaluator(config) as evaluator:
         logger.info("Starting subtask evaluation...")
         for episode_index in episode_indices:
+            skip_episode = False
             orchestrators_annotation_dir = (
                 Path(config.demo_data_dir) / "orchestrators" / f"task-{task_idx:04d}" / f"episode_{episode_index:08d}"
             )
@@ -756,7 +760,17 @@ def _run_subtask_eval(config, logger):
                     task_index=task_idx,
                     episode_index=episode_index,
                     target_start_frame=start_frame,
+                    required_warmup_stage_idx=(subtask_start_idx - 1) if subtask_start_idx > 0 else None,
                 )
+                if not warmup_result["warmup_ready_for_policy"]:
+                    logger.warning(
+                        "Skipping episode %d because warmup did not complete prerequisite stage %d before subtask %d.",
+                        episode_index,
+                        subtask_start_idx - 1,
+                        subtask_start_idx,
+                    )
+                    skip_episode = True
+                    break
 
                 # Reset the VLA policy only after demo warmup so the first inference sees the preparatory state.
                 evaluator.policy.reset()
@@ -876,6 +890,8 @@ def _run_subtask_eval(config, logger):
                 if config.write_video:
                     evaluator.video_writer = None
                     logger.info(f"Saved video: {video_name}")
+            if skip_episode:
+                continue
 
     # --- Aggregated summary ---
     n_total = len(summary_results)

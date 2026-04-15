@@ -285,51 +285,20 @@ def normalize_skill_text(skill_text: str) -> str:
     return normalized.strip("_")
 
 
-def canonicalize_skill_label(skill_text: str) -> str:
-    """
-    Collapse different user / annotation spellings into one canonical skill key.
-    """
-    normalized = normalize_skill_text(skill_text)
-    collapsed = normalized.replace("_", "")
-
-    if collapsed.startswith("moveto"):
-        return "move_to"
-    if collapsed.startswith("pick") and "from" in collapsed:
-        return "pickup_from"
-    if collapsed.startswith("press"):
-        return "press"
-    if collapsed.startswith("place") and "nextto" in collapsed and "on" in collapsed:
-        return "place_on_next_to"
-    if collapsed.startswith("place") and "on" in collapsed:
-        return "place_on"
-    if collapsed.startswith("place") and "in" in collapsed:
-        return "place_in"
-
-    return normalized
-
-
 def subtask_matches_skill(subtask_info: Dict, target_skill: str) -> bool:
     """
     Match one subtask annotation against a user-facing skill selector.
     """
     target_normalized = normalize_skill_text(target_skill)
-    target_canonical = canonicalize_skill_label(target_skill)
 
     candidate_texts = [
         subtask_info.get("skill_description", ""),
         subtask_info.get("cot_subtask_description", ""),
     ]
     candidate_tokens = {
-        normalize_skill_text(text)
-        for text in candidate_texts
-        if isinstance(text, str) and len(text.strip()) > 0
+        normalize_skill_text(text) for text in candidate_texts if isinstance(text, str) and len(text.strip()) > 0
     }
-    candidate_tokens.update(
-        canonicalize_skill_label(text)
-        for text in candidate_texts
-        if isinstance(text, str) and len(text.strip()) > 0
-    )
-    return target_normalized in candidate_tokens or target_canonical in candidate_tokens
+    return target_normalized in candidate_tokens 
 
 
 def build_subtask_eval_targets(
