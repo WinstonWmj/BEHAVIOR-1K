@@ -240,8 +240,10 @@ class USDObject(StatefulObject):
         # If there is a file hash already in the init info, compare against it to see if the file has changed
         if self._expected_file_hash is not None:
             if file_hash != self._expected_file_hash:
+                stat = os.stat(usd_path)
                 log.warn(
-                    f"Object {self.name} was expected to have USD file hash {self._expected_file_hash} but loaded with {file_hash}. The saved state might be incompatible."
+                    f"Object {self.name} was expected to have USD file hash {self._expected_file_hash} but loaded with {file_hash}. "
+                    f"The saved state might be incompatible. usd_path={usd_path} size={stat.st_size} mtime={stat.st_mtime}"
                 )
         else:
             # If there is no expected file hash, set the expected file hash to the loaded one

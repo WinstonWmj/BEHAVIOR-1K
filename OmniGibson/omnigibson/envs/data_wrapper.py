@@ -21,6 +21,7 @@ from omnigibson.utils.python_utils import create_object_from_init_info, h5py_gro
 from omnigibson.utils.ui_utils import create_module_logger
 from omnigibson.tasks.behavior_task import BehaviorTask
 from omnigibson.controllers.controller_base import ControlType
+from omnigibson.controllers.controller_view import ControllerView
 
 # Create module logger
 log = create_module_logger(module_name=__name__)
@@ -769,7 +770,7 @@ class DataPlaybackWrapper(DataWrapper):
             # Since we are setting all objects to be visual-only, physics will not be propogating
             config["env"]["action_frequency"] = 30.0
             config["env"]["rendering_frequency"] = 30.0
-            config["env"]["physics_frequency"] = 120.0
+            config["env"]["physics_frequency"] = float(os.getenv("BEHAVIOR_REPLAY_PHYSICS_FREQUENCY", "120.0"))
             # Simulator-level visual-only set to True
             gm.VISUAL_ONLY = True
 
@@ -1000,8 +1001,8 @@ class DataPlaybackWrapper(DataWrapper):
             for robot in self.robots:
                 robot.control_enabled = False
                 # Set all controllers to effort mode with zero gain, this keeps the robot still
-                for controller in robot.controllers.values():
-                    for i, dof in enumerate(controller.dof_idx):
+                for group_key, _ in robot.controllers.values():
+                    for dof in ControllerView.get_dof_idx(group_key).tolist():
                         dof_joint = robot.joints[robot.dof_names_ordered[dof]]
                         dof_joint.set_control_type(
                             control_type=ControlType.EFFORT,

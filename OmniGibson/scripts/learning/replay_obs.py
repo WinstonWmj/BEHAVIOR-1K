@@ -1,6 +1,5 @@
 import argparse
 import csv
-import gspread
 import h5py
 import json
 import numpy as np
@@ -87,14 +86,16 @@ class BehaviorDataPlaybackWrapper(DataPlaybackWrapper):
         for name in self.env.robots[0].sensors:
             if f"robot_r1::{name}" in camera_names:
                 # add unique instance ids as attrs
+                seg_key = f"robot_r1::{name}::seg_instance_id"
+                if seg_key not in traj_grp["obs"]:
+                    log.warning(f"Skipping unique instance ids for missing obs key: {seg_key}")
+                    continue
                 unique_ins_ids = set()
                 # batch process to avoid memory issues
-                for i in range(0, traj_grp["obs"][f"robot_r1::{name}::seg_instance_id"].shape[0], FLUSH_EVERY_N_STEPS):
+                for i in range(0, traj_grp["obs"][seg_key].shape[0], FLUSH_EVERY_N_STEPS):
                     unique_ins_ids.update(
                         th.unique(
-                            th.from_numpy(
-                                traj_grp["obs"][f"robot_r1::{name}::seg_instance_id"][i : i + FLUSH_EVERY_N_STEPS]
-                            )
+                            th.from_numpy(traj_grp["obs"][seg_key][i : i + FLUSH_EVERY_N_STEPS])
                         )
                         .to(th.uint32)
                         .tolist()
@@ -108,6 +109,7 @@ def replay_hdf5_file(
     task_id: int,
     demo_id: int,
     camera_names: Dict[str, str] = ROBOT_CAMERA_NAMES["R1Pro"],
+    generate_rgb: bool = False,
     generate_rgbd: bool = False,
     generate_seg: bool = False,
     generate_bbox: bool = False,
@@ -122,6 +124,7 @@ def replay_hdf5_file(
         task_id: ID of the task to replay
         demo_id: ID of the demo to replay
         camera_names: Dict of camera names to process
+        generate_rgb: If True, generates RGB videos from the replayed data
         generate_rgbd: If True, generates RGBD videos from the replayed data
         generate_seg: If True, generates segmentation data from the replayed data
         generate_bbox: If True, generates bounding box data from the replayed data
@@ -141,8 +144,10 @@ def replay_hdf5_file(
     gm.ENABLE_TRANSITION_RULES = False
 
     modalities = []
+    if generate_rgb or generate_rgbd:
+        modalities.append("rgb")
     if generate_rgbd:
-        modalities += ["rgb", "depth_linear"]
+        modalities.append("depth_linear")
     if generate_seg:
         modalities += ["seg_semantic", "seg_instance_id"]
     # Robot sensor configuration
@@ -204,7 +209,7 @@ def replay_hdf5_file(
     )
 
     # Modify head camera
-    if generate_rgbd:
+    if generate_rgb or generate_rgbd:
         env.robots[0].sensors["robot_r1:zed_link:Camera:0"].horizontal_aperture = 40.0
         env.robots[0].sensors["robot_r1:zed_link:Camera:0"].image_height = HEAD_RESOLUTION[0]
         env.robots[0].sensors["robot_r1:zed_link:Camera:0"].image_width = HEAD_RESOLUTION[1]
@@ -218,7 +223,7 @@ def replay_hdf5_file(
     log.info(f" >>> Replaying episode {episode_id}")
     # initialize video writers if required
     video_writers = dict()
-    if generate_rgbd:
+    if generate_rgb or generate_rgbd:
         for camera_id, camera_name in camera_names.items():
             rgb_dir = os.path.join(
                 data_folder,
@@ -227,15 +232,7 @@ def replay_hdf5_file(
                 f"task-{task_id:04d}",
                 f"observation.images.rgb.{camera_id}",
             )
-            depth_dir = os.path.join(
-                data_folder,
-                "2025-challenge-demos",
-                "videos",
-                f"task-{task_id:04d}",
-                f"observation.images.depth.{camera_id}",
-            )
             makedirs_with_mode(rgb_dir)
-            makedirs_with_mode(depth_dir)
             resolution = HEAD_RESOLUTION if "zed" in camera_name else WRIST_RESOLUTION
             # RGB video writer
             video_writers[f"{camera_name}::rgb"] = create_video_writer(
@@ -245,14 +242,23 @@ def replay_hdf5_file(
                 pix_fmt="yuv420p",
                 stream_options={"x265-params": "log-level=none"},
             )
-            # Depth video writer
-            video_writers[f"{camera_name}::depth_linear"] = create_video_writer(
-                fpath=f"{depth_dir}/episode_{demo_id:08d}.mp4",
-                resolution=resolution,
-                codec_name="libx265",
-                pix_fmt="yuv420p10le",
-                stream_options={"x265-params": "lossless=1:log-level=none"},
-            )
+            if generate_rgbd:
+                depth_dir = os.path.join(
+                    data_folder,
+                    "2025-challenge-demos",
+                    "videos",
+                    f"task-{task_id:04d}",
+                    f"observation.images.depth.{camera_id}",
+                )
+                makedirs_with_mode(depth_dir)
+                # Depth video writer
+                video_writers[f"{camera_name}::depth_linear"] = create_video_writer(
+                    fpath=f"{depth_dir}/episode_{demo_id:08d}.mp4",
+                    resolution=resolution,
+                    codec_name="libx265",
+                    pix_fmt="yuv420p10le",
+                    stream_options={"x265-params": "lossless=1:log-level=none"},
+                )
 
     env.playback_episode(
         episode_id=episode_id,
@@ -535,6 +541,7 @@ def main():
     parser.add_argument("--task_name", type=str, required=True, help="Task name to process")
     parser.add_argument("--demo_id", type=int, required=True, help="Demo ID to process")
     parser.add_argument("--low_dim", action="store_true", help="Include this flag to generate low dimensional data")
+    parser.add_argument("--rgb", action="store_true", help="Include this flag to generate RGB videos")
     parser.add_argument("--rgbd", action="store_true", help="Include this flag to generate rgbd videos")
     parser.add_argument("--offline_rgbd", action="store_true", help="Whether rgbd videos should be generated offline")
 
@@ -567,11 +574,12 @@ def main():
             raise FileNotFoundError(
                 f"Error: File episode_{args.demo_id:08d}.hdf5 does not exists under {args.data_folder}"
             )
-    if args.rgbd or args.seg or args.bbox:
+    if args.rgb or args.rgbd or args.seg or args.bbox:
         episode_id = replay_hdf5_file(
             data_folder=args.data_folder,
             task_id=task_id,
             demo_id=args.demo_id,
+            generate_rgb=args.rgb,
             generate_rgbd=args.rgbd,
             generate_seg=args.seg,
             generate_bbox=args.bbox,
@@ -625,6 +633,8 @@ def main():
         log.warning(f"File {args.data_folder}/replayed/episode_{args.demo_id:08d}.hdf5 not found")
     # Optionally update google sheet
     if args.update_sheet:
+        import gspread
+
         credentials_path = f"{os.environ.get('HOME')}/Documents/credentials"
         sheet_update_success = False
         for _ in range(5):
