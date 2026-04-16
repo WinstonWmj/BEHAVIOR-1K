@@ -1,5 +1,6 @@
 import os
 import json
+from copy import deepcopy
 from pathlib import Path
 import random
 
@@ -211,8 +212,10 @@ class BehaviorTask(BaseTask):
         return terminations
 
     def _create_reward_functions(self):
-        # Initialize reward functions dict and fill in with Potential reward
         rewards = dict()
+        reward_mode = self._reward_config["reward_mode"]
+        task_reward_name = self._reward_config["task_specific_reward_name"] or self.activity_name
+        task_reward_kwargs = deepcopy(self._reward_config["task_specific_reward_kwargs"])
 
         if reward_mode in {"potential", "combined"}:
             rewards["potential"] = PotentialReward(
@@ -285,12 +288,16 @@ class BehaviorTask(BaseTask):
         if self.use_presampled_robot_pose:
             robot = self.get_agent(env)
             presampled_poses = env.scene.get_task_metadata(key="robot_poses")
+            robot_model_name = getattr(robot, "model", None) or getattr(robot, "model_name", robot.__class__.__name__)
+            pose_key = robot_model_name
+            if presampled_poses and pose_key not in presampled_poses and str(robot_model_name).lower() == "r1pro":
+                pose_key = "R1Pro"
             assert (
-                robot.model_name in presampled_poses
-            ), f"{robot.model_name} presampled pose is not found in task metadata; please set use_presampled_robot_pose to False in task config"
+                presampled_poses is not None and pose_key in presampled_poses
+            ), f"{robot_model_name} presampled pose is not found in task metadata; please set use_presampled_robot_pose to False in task config"
 
             # Select pose based on randomize_presampled_pose flag
-            available_poses = presampled_poses[robot.model_name]
+            available_poses = presampled_poses[pose_key]
             if self.randomize_presampled_pose:
                 robot_pose = random.choice(available_poses)
             else:
@@ -711,4 +718,7 @@ class BehaviorTask(BaseTask):
     def default_reward_config(cls):
         return {
             "r_potential": 1.0,
+            "reward_mode": "potential",
+            "task_specific_reward_name": None,
+            "task_specific_reward_kwargs": {},
         }

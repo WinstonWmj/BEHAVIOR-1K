@@ -4,8 +4,8 @@ defaults:
   - task: behavior
   - policy: ???
 
-env_wrapper: 
-  _target_: omnigibson.learning.wrappers.RGBLowResWrapper
+# env_wrapper: 
+#   _target_: omnigibson.learning.wrappers.RGBLowResWrapper
 policy_name: ???  # filled by policy
 headless: true  # whether to run in headless mode (no GUI)
 eval_level: instance  # "instance" or "subtask"; explicitly selects which evaluation loop to run
@@ -22,7 +22,7 @@ policy_endpoints: {}  # switchable policy servers: {name: {host: str, port: int}
 
 # + additional config
 env_wrapper: 
-  _target_: behavior.learning.wrappers.RGBWrapper
+  _target_: omnigibson.learning.wrappers.rgb_wrapper.RGBWrapper
 
 save_rollout: false
 perturb_pose: false

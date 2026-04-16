@@ -48,7 +48,7 @@ Usage: ./setup.sh [OPTIONS]
 
 Options:
   -h, --help              Display this help message
-  --new-env               Create a new conda environment 'behavior'
+  --new-env               Create a new conda environment 'behavior371'
   --omnigibson            Install OmniGibson (core physics simulator)
   --bddl                  Install BDDL (Behavior Domain Definition Language)
   --joylo                 Install JoyLo (teleoperation interface)
@@ -191,7 +191,7 @@ prompt_for_terms
 
 # Create conda environment
 if [ "$NEW_ENV" = true ]; then
-    echo "Creating conda environment 'behavior'..."
+    echo "Creating conda environment 'behavior371'..."
     command -v conda >/dev/null || { echo "ERROR: Conda not found"; exit 1; }
     
     # Set auto-accept environment variable if user agreed to TOS
@@ -203,9 +203,9 @@ if [ "$NEW_ENV" = true ]; then
     source "$(conda info --base)/etc/profile.d/conda.sh"
     
     # Check if environment already exists and exit with instructions
-    if conda env list | grep -q "^behavior "; then
+    if conda env list | grep -q "^behavior371 "; then
         echo ""
-        echo "ERROR: Conda environment 'behavior' already exists!"
+        echo "ERROR: Conda environment 'behavior371' already exists!"
         echo ""
         echo "Please remove or rename the existing environment and re-run this script."
         echo ""
@@ -213,10 +213,12 @@ if [ "$NEW_ENV" = true ]; then
     fi
     
     # Create environment with only Python 3.10
-    conda create -n behavior python=3.10 -c conda-forge -y
-    conda activate behavior
+    conda create -n behavior371 python=3.10 -c conda-forge -y
+    conda activate behavior371
+
+    export http_proxy=http://127.0.0.1:7890;export https_proxy=http://127.0.0.1:7890;export all_proxy=socks5://127.0.0.1:7890;
     
-    [[ "$CONDA_DEFAULT_ENV" != "behavior" ]] && { echo "ERROR: Failed to activate environment"; exit 1; }
+    [[ "$CONDA_DEFAULT_ENV" != "behavior371" ]] && { echo "ERROR: Failed to activate environment"; exit 1; }
     
     # Install numpy and setuptools via pip
     echo "Installing numpy and setuptools..."
@@ -424,7 +426,7 @@ fi
 
 echo ""
 echo "=== Installation Complete! ==="
-if [ "$NEW_ENV" = true ]; then echo "✓ Created conda environment 'behavior'"; fi
+if [ "$NEW_ENV" = true ]; then echo "✓ Created conda environment 'behavior371'"; fi
 if [ "$OMNIGIBSON" = true ]; then echo "✓ Installed OmniGibson + Isaac Sim"; fi
 if [ "$BDDL" = true ]; then echo "✓ Installed BDDL"; fi
 if [ "$JOYLO" = true ]; then echo "✓ Installed JoyLo"; fi
@@ -432,4 +434,4 @@ if [ "$PRIMITIVES" = true ]; then echo "✓ Installed OmniGibson with primitives
 if [ "$EVAL" = true ]; then echo "✓ Installed evaluation support"; fi
 if [ "$DATASET" = true ]; then echo "✓ Downloaded datasets"; fi
 echo ""
-if [ "$NEW_ENV" = true ]; then echo "To activate: conda activate behavior"; fi
+if [ "$NEW_ENV" = true ]; then echo "To activate: conda activate behavior371"; fi

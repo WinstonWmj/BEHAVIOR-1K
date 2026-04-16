@@ -18,8 +18,12 @@ WAITING_FOR_STAGE_COMPLETION=${WAITING_FOR_STAGE_COMPLETION:-true}
 KEEP_RUNNING_AFTER_SUCCESS=${KEEP_RUNNING_AFTER_SUCCESS:-false}
 HEADLESS=${HEADLESS:-true}
 INSTANCE_IDS=${INSTANCE_IDS:-[0]}  # only used in instance mode; 0 4 6 1 0
-LOG_BASE=./logs/${EVAL_LEVEL}_eval/${TASK}-placeon-task_reward/warmup-${TASK}-placeon-warmupcontinue-1
+SCRIPT_DIR=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)
+REPO_ROOT=${REPO_ROOT:-${SCRIPT_DIR}}
+OMNIGIBSON_ROOT=${OMNIGIBSON_ROOT:-${REPO_ROOT}/OmniGibson}
+LOG_BASE=${LOG_BASE:-${REPO_ROOT}/logs/${EVAL_LEVEL}_eval/${TASK}-placeon-task_reward/warmup-${TASK}-placeon-warmupcontinue-371}
 PYTHON_BIN=${PYTHON_BIN:-python}
+export PYTHONPATH="${REPO_ROOT}/bddl:${OMNIGIBSON_ROOT}:${PYTHONPATH:-}"
 
 if ! command -v "${PYTHON_BIN}" >/dev/null 2>&1; then
   if command -v python3 >/dev/null 2>&1; then
@@ -58,7 +62,7 @@ COMMON_ARGS=(
   instance_reward_mode=task
   waiting_for_stage_completion=${WAITING_FOR_STAGE_COMPLETION}
   keep_running_after_success=${KEEP_RUNNING_AFTER_SUCCESS}
-  env_wrapper._target_=omnigibson.learning.wrappers.RGBWrapper
+  env_wrapper._target_=omnigibson.learning.wrappers.rgb_wrapper.RGBWrapper
   demo_data_dir="${B1K_DEMO_ROOT}"
   run_episode_idx="${RUN_EPISODE_IDX}"
   write_video="${WRITE_VIDEO}"
@@ -93,22 +97,28 @@ fi
 if [ "${EVAL_LEVEL}" = "subtask" ]; then
   echo "Demo expert parquet root: ${B1K_DEMO_ROOT}"
   echo "Demo expert episode index: ${RUN_EPISODE_IDX}"
-  "${PYTHON_BIN}" OmniGibson/omnigibson/learning/eval.py \
-    "${COMMON_ARGS[@]}" \
-    policy=demo_expert \
-    model.host=${MODEL_HOST} \
-    model.port=${MODEL_PORT} \
-    eval_on_train_instances=true \
-    demo_expert_data_dir="${B1K_DEMO_ROOT}" \
-    demo_expert_episode_index=${RUN_EPISODE_IDX} \
-    eval_instance_ids="${INSTANCE_IDS}"
+  (
+    cd "${OMNIGIBSON_ROOT}"
+    "${PYTHON_BIN}" omnigibson/learning/eval.py \
+      "${COMMON_ARGS[@]}" \
+      policy=demo_expert \
+      model.host=${MODEL_HOST} \
+      model.port=${MODEL_PORT} \
+      eval_on_train_instances=true \
+      demo_expert_data_dir="${B1K_DEMO_ROOT}" \
+      demo_expert_episode_index=${RUN_EPISODE_IDX} \
+      eval_instance_ids="${INSTANCE_IDS}"
+  )
 else
-  "${PYTHON_BIN}" OmniGibson/omnigibson/learning/eval.py \
-    "${COMMON_ARGS[@]}" \
-    policy=websocket \
-    model.host=${MODEL_HOST} \
-    model.port=${MODEL_PORT} \
-    eval_on_train_instances=false \
-    eval_instance_ids="${INSTANCE_IDS}" \
-    max_steps=${MAX_STEPS}
+  (
+    cd "${OMNIGIBSON_ROOT}"
+    "${PYTHON_BIN}" omnigibson/learning/eval.py \
+      "${COMMON_ARGS[@]}" \
+      policy=websocket \
+      model.host=${MODEL_HOST} \
+      model.port=${MODEL_PORT} \
+      eval_on_train_instances=false \
+      eval_instance_ids="${INSTANCE_IDS}" \
+      max_steps=${MAX_STEPS}
+  )
 fi

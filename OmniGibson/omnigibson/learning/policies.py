@@ -46,11 +46,14 @@ class WebsocketPolicy:
         *args,
         host: Optional[str] = None,
         port: Optional[int] = None,
+        allow_reconnect: bool = False,
         **kwargs,
     ) -> None:
         logging.info(f"Creating websocket client policy with host: {host}, port: {port}")
         self.last_action = None
         self.policy = None
+        self._host = host
+        self._port = port
         self._allow_reconnect = allow_reconnect
         if host is not None or port is not None:
             self.policy = WebsocketClientPolicy(host=host, port=port, allow_reconnect=allow_reconnect)
@@ -88,4 +91,6 @@ class WebsocketPolicy:
         return bool(self.policy is None or getattr(self.policy, "needs_obs", True))
 
     def reset(self) -> None:
-        self.policy.reset()
+        if self.policy is not None:
+            self.policy.reset()
+        self.last_action = None

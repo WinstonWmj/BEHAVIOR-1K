@@ -34,7 +34,7 @@ class WebsocketClientPolicy:
     See WebsocketPolicyServer for a corresponding server implementation.
     """
 
-    def __init__(self, host: str = "0.0.0.0", port: Optional[int] = None, api_key: Optional[str] = None) -> None:
+    def __init__(self, host: str = "0.0.0.0", port: Optional[int] = None, api_key: Optional[str] = None, allow_reconnect: bool = False) -> None:
         self._uri = f"ws://{host}"
         if port is not None:
             self._uri += f":{port}"
@@ -120,6 +120,9 @@ class WebsocketClientPolicy:
         return action
 
     def reset(self) -> None:
+        if self._ws is None:
+            self._ws, self._server_metadata = self._wait_for_server()
+
         data = self._packer.pack({"reset": True})
         self._ws.send(data)
         self._last_done = False
