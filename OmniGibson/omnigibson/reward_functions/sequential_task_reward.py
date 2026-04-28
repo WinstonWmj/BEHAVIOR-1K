@@ -70,10 +70,12 @@ class SequentialTaskReward(BaseRewardFunction):
             stage["name"]: {
                 "completed": stage["name"] in self._completed_stage_names,
                 "reward": 0.0,
+                "completion_bonus": 0.0,
             }
             for stage in self._stage_defs
         }
         total_reward = 0.0
+        completion_bonus = 0.0
 
         while self._stage_index < self._total_stages:
             active_stage = self._stage_defs[self._stage_index]
@@ -88,6 +90,7 @@ class SequentialTaskReward(BaseRewardFunction):
             stage_infos[stage_name] = {
                 "completed": stage_completed,
                 "reward": stage_reward,
+                "completion_bonus": 0.0,
                 **stage_metrics,
             }
             self._stage_cumulative_rewards[stage_name] += stage_reward
@@ -100,7 +103,8 @@ class SequentialTaskReward(BaseRewardFunction):
                 total_reward += self.stage_completion_bonus
                 stage_rewards[stage_name] += self.stage_completion_bonus
                 stage_infos[stage_name]["reward"] += self.stage_completion_bonus
-                stage_infos[stage_name]["completion_bonus"] = self.stage_completion_bonus
+                stage_infos[stage_name]["completion_bonus"] += self.stage_completion_bonus
+                completion_bonus += self.stage_completion_bonus
                 self._stage_cumulative_rewards[stage_name] += self.stage_completion_bonus
                 self._completed_stage_names.add(stage_name)
 
@@ -115,6 +119,7 @@ class SequentialTaskReward(BaseRewardFunction):
             "completed_stage_count": len(self._completed_stage_names),
             "total_stage_count": self._total_stages,
             "all_stages_completed": self._stage_index >= self._total_stages,
+            "completion_bonus": completion_bonus,
             "stage_rewards": stage_rewards,
             "stage_cumulative_rewards": deepcopy(self._stage_cumulative_rewards),
             "stage_infos": stage_infos,
