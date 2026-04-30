@@ -242,7 +242,12 @@ class BehaviorTask(BaseTask):
                 r_potential=self._reward_config["r_potential"],
             )
 
-        if reward_mode in {"task", "combined"}:
+        if reward_mode == "stage":
+            task_reward_kwargs["reward_mode"] = "stage"
+        elif reward_mode in {"task", "combined"}:
+            task_reward_kwargs.setdefault("reward_mode", "task")
+
+        if reward_mode in {"task", "stage", "combined"}:
             if task_reward_name == "turning_on_radio":
                 rewards["task_specific"] = TurningOnRadioReward(**task_reward_kwargs)
             elif task_reward_name == "hanging_pictures":

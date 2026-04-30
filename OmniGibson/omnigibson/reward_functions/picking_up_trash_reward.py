@@ -39,6 +39,7 @@ class PickingUpTrashReward(SequentialTaskReward):
         place_on_progress_scale=3.0,
         place_on_dense_scale=0.25,
         stage_completion_bonus=1.0,
+        reward_mode="task",
     ):
         self.move_to_success_threshold = move_to_success_threshold
         self.move_to_progress_scale = move_to_progress_scale
@@ -52,7 +53,7 @@ class PickingUpTrashReward(SequentialTaskReward):
         self.place_on_dense_scale = place_on_dense_scale
 
         self._stage_specs = []
-        super().__init__(stage_completion_bonus=stage_completion_bonus)
+        super().__init__(stage_completion_bonus=stage_completion_bonus, reward_mode=reward_mode)
 
     def reset(self, task, env):
         stage_annotations = self.STAGE_ANNOTATIONS

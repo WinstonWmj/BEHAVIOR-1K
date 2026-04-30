@@ -46,6 +46,7 @@ class MakeMicrowavePopcornReward(SequentialTaskReward):
         toggle_progress_scale=0.5,
         toggle_progress_dense_scale=0.4,
         stage_completion_bonus=1.0,
+        reward_mode="task",
     ):
         self.move_to_success_threshold = move_to_success_threshold
         self.move_to_progress_scale = move_to_progress_scale
@@ -75,7 +76,7 @@ class MakeMicrowavePopcornReward(SequentialTaskReward):
         self._has_left_support = False
         self._has_picked_up = False
         self._toggle_steps_required = int(getattr(toggle_macros, "CAN_TOGGLE_STEPS", 5))
-        super().__init__(stage_completion_bonus=stage_completion_bonus)
+        super().__init__(stage_completion_bonus=stage_completion_bonus, reward_mode=reward_mode)
 
     def _is_microwave_open(self):
         both_sides, relevant_joints, joint_directions = self._open_state.relevant_joints_info

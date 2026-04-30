@@ -55,6 +55,7 @@ class SetUpACoffeeStationInYourKitchenReward(SequentialTaskReward):
         next_to_progress_scale=2.5,
         next_to_dense_scale=0.2,
         stage_completion_bonus=1.0,
+        reward_mode="task",
     ):
         self.move_to_success_threshold = move_to_success_threshold
         self.move_to_progress_scale = move_to_progress_scale
@@ -70,7 +71,7 @@ class SetUpACoffeeStationInYourKitchenReward(SequentialTaskReward):
         self.next_to_dense_scale = next_to_dense_scale
 
         self._stage_specs = []
-        super().__init__(stage_completion_bonus=stage_completion_bonus)
+        super().__init__(stage_completion_bonus=stage_completion_bonus, reward_mode=reward_mode)
 
     def reset(self, task, env):
         stage_annotations = self.STAGE_ANNOTATIONS

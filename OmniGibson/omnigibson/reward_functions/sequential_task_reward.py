@@ -16,8 +16,12 @@ class SequentialTaskReward(BaseRewardFunction):
     marked completed.
     """
 
-    def __init__(self, stage_completion_bonus=1.0):
+    def __init__(self, stage_completion_bonus=1.0, reward_mode="task"):
         self.stage_completion_bonus = stage_completion_bonus
+        self.reward_mode = reward_mode
+        assert self.reward_mode in {"task", "stage"}, (
+            f"reward_mode must be 'task' or 'stage', got {self.reward_mode}"
+        )
         self._stage_index = 0
         self._stage_defs = []
         self._completed_stage_names = set()
@@ -85,16 +89,18 @@ class SequentialTaskReward(BaseRewardFunction):
             stage_reward = float(result.get("reward", 0.0))
             stage_completed = bool(result.get("completed", False))
             stage_metrics = deepcopy(result.get("metrics", {}))
+            reward_to_return = stage_reward if self.reward_mode == "task" else 0.0
 
-            stage_rewards[stage_name] = stage_reward
+            stage_rewards[stage_name] = reward_to_return
             stage_infos[stage_name] = {
                 "completed": stage_completed,
-                "reward": stage_reward,
+                "reward": reward_to_return,
+                "dense_reward": stage_reward,
                 "completion_bonus": 0.0,
                 **stage_metrics,
             }
             self._stage_cumulative_rewards[stage_name] += stage_reward
-            total_reward += stage_reward
+            total_reward += reward_to_return
 
             if not stage_completed:
                 break

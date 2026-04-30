@@ -39,6 +39,7 @@ class HangingPicturesReward(SequentialTaskReward):
         hang_grasp_dense_scale=0.1,
         hang_success_reward=5.0,
         stage_completion_bonus=1.0,
+        reward_mode="task",
     ):
         self.move_to_success_threshold = move_to_success_threshold
         self.move_to_progress_scale = move_to_progress_scale
@@ -62,7 +63,7 @@ class HangingPicturesReward(SequentialTaskReward):
         self._stage_objects = {}
         self._has_left_support = False
         self._has_picked_up = False
-        super().__init__(stage_completion_bonus=stage_completion_bonus)
+        super().__init__(stage_completion_bonus=stage_completion_bonus, reward_mode=reward_mode)
 
     def reset(self, task, env):
         self._stage_objects = {
